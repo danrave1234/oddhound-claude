@@ -144,6 +144,8 @@ function instrument(version: number) {
     const dragHint = el.getAttribute('draggable') === 'true' || el.hasAttribute('aria-grabbed') || el.hasAttribute('aria-dropeffect') || DRAG_HINT.test(roleDesc);
     // A bare [aria-roledescription] match is only interesting with a drag hint or another affordance.
     if (!el.matches(CORE) && !isField && !(role && WIDGET_ROLES.includes(role)) && !he.isContentEditable && !dragHint && !el.matches(FOCUSABLE)) return;
+    // A focusable container (tabindex on a wrapper of other controls) is not itself a control.
+    if (!el.matches(CORE) && !isField && !role && !he.isContentEditable && !dragHint && el.querySelector(CORE)) return;
     // Nested inside a link or button (an icon or span): the outer control is the affordance.
     if (!isField && !dragHint && el.parentElement?.closest('a[href], button, [role=button], [role=link]')) return;
     // Text inside an editable root is part of that root.
