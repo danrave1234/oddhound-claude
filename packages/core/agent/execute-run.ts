@@ -481,6 +481,11 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
         messages.push({ role: 'tool', tool_call_id: call.id, content: out.text });
         if (out.image) images.push(out.image);
       }
+      const left = LIMITS.modelTurnsPerRun - turns;
+      if (left <= 5 && !finished) {
+        // Budget awareness: tell the model to report what it found and wrap up before the hard limit.
+        messages.push({ role: 'user', content: `Only ${left} model turn(s) left. Report any rule violations now with report_candidate, then call finish_run with a factual summary of what you covered.` });
+      }
       if (images.length) {
         messages.push({ role: 'user', content: [
           { type: 'text', text: 'Screenshot for the tool result above (current viewport).' },

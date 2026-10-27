@@ -52,6 +52,17 @@ Each run explores the demo target with only its description, goals and five rule
 
 Each failure mode was caught by the verifier and reported truthfully (inconclusive / not fixed), never as a false success; each one led to a fix in Oddhound itself, not in the demo target. Total Meta spend for all development runs and smoke tests: **about $1.56** of the $150 credit.
 
+## 3b. First real verified site: danravekeh.com (October 27, 2026)
+
+| Step | Result |
+|---|---|
+| Canonical origin | `danravekeh.com` redirects to `https://www.danravekeh.com`; verification is exact-origin, so the www origin was used. |
+| Ownership | Token file committed to `danrave1234/MyPortfolio` (`v2/public/.well-known/oddhound-verify.txt`), live 42 s after the push; **Check now → verified**; re-checked automatically before the run. |
+| Run | Production, **observation only**, real `muse-spark-1.3`, fresh sandboxed container. 60 model turns, 44 actions, 9 page states, $0.43. Stopped at the turn limit (truthful status). No scope or egress violations. |
+| Coverage | Opened and closed every project's details view on desktop (Escape to close), then switched to a 390×844 phone and used the navigation menu. |
+| Findings | No rule violations reported within that scope. Two **configuration observations**, confirmed against the live headers: no Content-Security-Policy, and no X-Frame-Options / `frame-ancestors` (only HSTS is set). |
+| Follow-up made | The agent used its whole turn budget without writing a summary, so the loop now warns the model in its last 5 turns to report and finish. |
+
 ## 4. Spec gates (R0–R7) — where this build stands
 
 | Gate | State |
@@ -62,7 +73,7 @@ Each failure mode was caught by the verifier and reported truthfully (inconclusi
 | R3 Meta + queue + ledgers | Real Meta loop ✅, BullMQ-on-Postgres locally ✅, atomic spend/admission under races ✅. Hosted Postgres/queue not exercised. |
 | R4 autonomous discovery + verified defect | ✅ on the demo target with the real model (runs 1, 5, 6). |
 | R5 evidence/workspace/tenant + fixed retest | ✅ locally (tenant isolation over HTTP, escaped evidence, fenced briefs, unchanged-assertion retest). |
-| R6 two real verified sites + public demo | ❌ **Open.** Needs Drave to place a verification token on two real sites and a deployment. |
+| R6 two real verified sites + public demo | ⏳ **1 of 2 real sites done.** `https://www.danravekeh.com` verified by the `/.well-known` file method (token committed to the MyPortfolio repo) and scanned with real Muse Spark in observation-only mode — see §3b. EstabWeb still needs a staging copy (its deployments sit behind Vercel's sign-in, and production has payments, emails, AI calls and domain registration). Public deployment still open. |
 | R7 submission artifacts | ❌ Open (video, deployed URL). |
 
 ## 5. What is NOT done / not verified
@@ -70,7 +81,7 @@ Each failure mode was caught by the verifier and reported truthfully (inconclusi
 - **Not deployed.** No Fly token, so neither `oddhound-web` nor `oddhound-browser` runs anywhere public. `infra/fly/*.fly.toml` and `apps/web/Dockerfile` are written but **untested**.
 - **Fly per-run Machines untested** (`packages/core/browser/fly-runtime.ts`).
 - **GitHub sign-in untested** (no OAuth app). Local testing used the dev-only email sign-in, which is disabled when `NODE_ENV=production` (verified: `next start` hides it).
-- **No real verified site scanned yet** (B15). Verification logic is unit-tested against a live local server; a real DNS/file/meta token on Drave's sites is still needed.
+- **Second real site not scanned yet** (B15). danravekeh.com is verified and scanned; EstabWeb needs a staging copy that is publicly reachable and isolated from production data before it can be verified.
 - **Mailbox/OTP sign-ups, external SSO, CAPTCHA/MFA** are not supported; such workflows show as blocked.
 - **axe/Lighthouse/SEO checks, ZAP, CSRF/CORS/framing/XSS probes** — not implemented (P1/P2 in the spec).
 - **Demo video** — not started.
