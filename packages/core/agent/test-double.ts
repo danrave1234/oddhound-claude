@@ -14,8 +14,12 @@ type El = { ref: string; kind: string; label: string; attrs: string };
 function lastObservation(messages: ChatMessage[]): { path: string; els: El[]; messages: string[]; text: string } | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]!;
-    if (m.role !== 'tool' || !m.content.includes('PAGE v') || m.content.startsWith('[older')) continue;
-    const lines = m.content.split('\n');
+    // After the conversation is compacted, the current page is inside Oddhound's notebook.
+    const fromNotebook = m.role === 'user' && typeof m.content === 'string' && m.content.startsWith('NOTEBOOK');
+    if (!fromNotebook && (m.role !== 'tool' || !m.content.includes('PAGE v') || m.content.startsWith('[older'))) continue;
+    const content = m.content as string;
+    if (!content.includes('PAGE v')) continue;
+    const lines = content.slice(content.indexOf('PAGE v')).split('\n');
     const head = lines.find((l) => l.startsWith('PAGE v'))!;
     const path = /^PAGE v\d+: (\S+)/.exec(head)?.[1] ?? '/';
     const els: El[] = [];
@@ -24,7 +28,7 @@ function lastObservation(messages: ChatMessage[]): { path: string; els: El[]; me
       if (mm) els.push({ ref: mm[1]!, kind: mm[2]!, label: JSON.parse(mm[3]!), attrs: mm[4] ?? '' });
     }
     const msgLine = lines.find((l) => l.startsWith('messages: ')) ?? '';
-    const text = m.content.split('<<<UNTRUSTED_PAGE_TEXT')[1] ?? '';
+    const text = content.split('<<<UNTRUSTED_PAGE_TEXT')[1] ?? '';
     return { path, els, messages: msgLine ? [msgLine.slice(10)] : [], text };
   }
   return null;
@@ -62,7 +66,9 @@ export class HeuristicTestPlanner implements ChatProvider {
   #firstRecordPath = '';
 
   async chat(req: ChatRequest): Promise<ChatResult> {
-    if (req.messages.length <= 2) { this.#step = 0; this.#queue = []; }
+    // A new run starts with [system, "Begin..."]; a compacted conversation ([system, notebook]) is the same run.
+    const first = req.messages[1];
+    if (req.messages.length <= 2 && !(first?.role === 'user' && typeof first.content === 'string' && first.content.startsWith('NOTEBOOK'))) { this.#step = 0; this.#queue = []; }
     const call = this.#next(req.messages);
     const toolCalls: ToolCall[] = call ? [{ id: `call_${randomUUID().slice(0, 8)}`, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } }] : [];
     return {

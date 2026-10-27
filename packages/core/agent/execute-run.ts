@@ -490,6 +490,12 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
     if (!toolOffered(mode, name)) return { text: `Tool "${name}" is not available in this run.` };
     let raw: unknown;
     try { raw = JSON.parse(call.function.arguments || '{}'); } catch { return { text: 'Invalid JSON arguments.' }; }
+    // R4 run 1: the model repeatedly nested control_values inside the scenario, where validation dropped
+    // them and the report was refused 7 times. Accept them there too.
+    if (name === 'report_candidate' && raw && typeof raw === 'object') {
+      const r = raw as { scenario?: { control_values?: unknown }; control_values?: unknown };
+      if (r.control_values === undefined && r.scenario && typeof r.scenario === 'object' && r.scenario.control_values !== undefined) r.control_values = r.scenario.control_values;
+    }
     const parsed = schema.safeParse(raw);
     if (!parsed.success) return { text: `Invalid arguments: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ').slice(0, 400)}` };
     const args = parsed.data as Record<string, any>;
@@ -664,6 +670,9 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
           return { text: knownRule ? `Candidate recorded (${t.steps.length} replay steps from ${t.start}). Oddhound will replay it in a fresh session.` : `Recorded as needs-review: "${args.rule_id}" is not an owner or baseline rule.` };
         }
         const known = contract.rules.some((r) => r.id === args.rule_id) || BASELINE_RULES.some((r) => r.id === args.rule_id);
+        // One verified reproduction per rule and scenario kind is enough; repeated reports only cost turns.
+        const same = candidates.find((c) => c.source === 'agent' && c.ruleId === args.rule_id && c.scenario.kind === args.scenario.kind);
+        if (same) return { text: `Already recorded: "${same.title}" (${same.ruleId}, ${same.scenario.kind}). Oddhound will verify it; move on to the next charter.` };
         // Ground the scenario in what Oddhound actually observed, then reject anything still unknown,
         // telling the model the real labels so it can correct the report in its next turn.
         const grounded = groundCandidate({ title: args.title, ruleId: args.rule_id, impact: args.impact, observed: args.observed, scenario: args.scenario, controlValues: args.control_values, actor: session.actor, device: session.device }, recorded);
@@ -1001,7 +1010,7 @@ export function scenarioProblems(c: Candidate, recorded: Recorded): string[] {
     checkFields(s.form.path, s.form.fields); checkControl(s.form.path, s.form.submit);
     const d = scenarioDefect(s); if (d) problems.push(d);
     // A rejected-input rule needs a valid neighbouring case, so a form that rejects everything is not mistaken for a fix.
-    if (s.expectation === 'rejected' && !c.controlValues?.[s.testedField]) problems.push(`Provide control_values with a VALID value for ${JSON.stringify(s.testedField)} that must still be accepted.`);
+    if (s.expectation === 'rejected' && !c.controlValues?.[s.testedField]) problems.push(`Provide control_values (a top-level argument next to scenario) with a VALID value for ${JSON.stringify(s.testedField)} that must still be accepted, e.g. "control_values": {${JSON.stringify(s.testedField)}: "<valid value>"}.`);
   }
   if (s.kind === 'cross_account_read') { checkFields(s.create.path, s.create.fields); checkControl(s.create.path, s.create.submit); }
   if (s.kind === 'mobile_reachability') { if (!recorded.controlsByPath.has(s.path)) problems.push(`Path ${s.path} was never observed in this run.`); else checkControl(s.path, s.control); }

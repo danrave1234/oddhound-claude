@@ -91,7 +91,8 @@ export const ToolArgs = {
     observed: z.string().min(5).max(500),
     // A trace is referenced by action numbers; Oddhound builds its steps from its own ledger.
     scenario: z.union([ScenarioSchema, TraceRefSchema, BatchRefSchema]),
-    control_values: z.record(z.string(), z.string().max(200)).optional(),
+    // Numbers are accepted and kept as the text a user would type.
+    control_values: z.record(z.string(), z.union([z.string().max(200), z.number().transform(String)])).optional(),
   }),
   do_steps: z.object({ steps: z.array(StepSchema).min(1).max(8) }),
   run_scenario_batch: z.object({ goal: z.string().min(3).max(200), steps: z.array(BatchStepSchema).min(1).max(15) }),
@@ -110,8 +111,8 @@ export const BROWSER_TOOLS = new Set<ToolName>(['navigate', 'click', 'fill', 'fi
  */
 export const AGENT_MODES = ['per_step', 'steps', 'batch'] as const;
 export type AgentMode = (typeof AGENT_MODES)[number];
-/** Chosen from the R4 comparison recorded in docs/STATUS.md. */
-export const DEFAULT_AGENT_MODE: AgentMode = 'steps';
+/** Chosen from the R4 comparison recorded in docs/STATUS.md §3c (batch found 7/8 seeded defects, per-step 5/8). */
+export const DEFAULT_AGENT_MODE: AgentMode = 'batch';
 
 export function agentModeFromEnv(env: NodeJS.ProcessEnv = process.env): AgentMode {
   const v = env.ODDHOUND_AGENT_MODE;
