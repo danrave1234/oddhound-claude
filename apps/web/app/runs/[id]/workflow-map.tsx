@@ -2,7 +2,7 @@
 // Map view over the same persisted states/transitions as the list. Positions are computed once per
 // state (layered by first discovery) and kept stable as new nodes arrive; the view never auto-pans.
 import { useMemo } from 'react';
-import { ReactFlow, Background, Controls, type Node, type Edge } from '@xyflow/react';
+import { ReactFlow, Background, BackgroundVariant, Controls, MarkerType, type Node, type Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
 type State = { id: string; route: string; title: string; actor: string; device: string };
@@ -18,23 +18,29 @@ export function WorkflowMap({ states, transitions }: { states: State[]; transiti
       }
     }
     const perLevel = new Map<number, number>();
-    const nodes: Node[] = states.map((s) => {
+    const nodes: Node[] = states.map((s, i) => {
       const d = depth.get(s.id) ?? 0;
       const row = perLevel.get(d) ?? 0; perLevel.set(d, row + 1);
       return {
-        id: s.id, position: { x: d * 240, y: row * 90 },
-        data: { label: `${s.title}\n${s.route} · ${s.actor}/${s.device}` },
-        style: { fontSize: 11, width: 200, whiteSpace: 'pre-line', borderRadius: 8, border: '1px solid var(--separator-strong)', background: 'var(--surface)', color: 'var(--text)' },
+        id: s.id, position: { x: d * 260, y: row * 104 },
+        data: { label: <div className="flow-node"><strong>{s.title}</strong><span>{s.route}</span><span>{s.actor} · {s.device}</span></div> },
+        style: { width: 210, padding: '10px 12px', borderRadius: 10, border: `1px solid ${i === 0 ? 'var(--accent)' : 'var(--separator-strong)'}`, background: 'var(--surface)', color: 'var(--text)', boxShadow: 'var(--shadow-1)' },
       };
     });
-    const edges: Edge[] = transitions.filter((t) => t.from_state).map((t) => ({ id: t.id, source: t.from_state!, target: t.to_state, label: t.label.slice(0, 40), labelStyle: { fontSize: 10 } }));
+    const edges: Edge[] = transitions.filter((t) => t.from_state).map((t) => ({
+      id: t.id, source: t.from_state!, target: t.to_state, label: t.label.slice(0, 40),
+      labelStyle: { fontSize: 10.5, fill: 'var(--text-2)' }, labelBgStyle: { fill: 'var(--surface)' }, labelBgPadding: [4, 2] as [number, number], labelBgBorderRadius: 4,
+      style: { stroke: 'var(--text-3)', strokeWidth: 1.2 }, markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: 'var(--text-3)' },
+    }));
     return { nodes, edges };
   }, [states, transitions]);
   return (
-    <div style={{ height: 520 }} className="card" aria-label="Workflow map (the List view has the same information)">
-      <ReactFlow nodes={nodes} edges={edges} fitView nodesDraggable={false} proOptions={{ hideAttribution: false }}>
-        <Background /><Controls showInteractive={false} />
-      </ReactFlow>
+    <div style={{ height: 'min(560px, 70vh)' }} className="card flow-card fade-in" aria-label="Workflow map (the List view has the same information)">
+      {states.length ? (
+        <ReactFlow nodes={nodes} edges={edges} fitView nodesDraggable={false} colorMode="system" proOptions={{ hideAttribution: false }} style={{ borderRadius: 'var(--radius)' }}>
+          <Background variant={BackgroundVariant.Dots} gap={18} size={1.2} /><Controls showInteractive={false} />
+        </ReactFlow>
+      ) : <div className="empty" style={{ height: '100%', alignContent: 'center' }}><p>No page states recorded yet. The map fills in as the agent explores.</p></div>}
     </div>
   );
 }

@@ -2,6 +2,8 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { Shell } from '@/ui/shell';
 import { StatusBadge } from '@/ui/status';
+import { Icon } from '@/ui/icons';
+import { SetupSteps } from '@/ui/setup-steps';
 import { currentUser, db } from '@/lib/server';
 import { VerifyPanel } from './verify-panel';
 import { RunSetup } from './run-setup';
@@ -20,28 +22,58 @@ export default async function Project({ params }: { params: Promise<{ id: string
     FROM runs r WHERE project_id = $1 ORDER BY created_at DESC LIMIT 20`, [id])).rows;
   const host = new URL(project.origin).hostname;
   return (
-    <Shell active="/app" user={user} toolbar={<><Link href="/app">Projects</Link><span className="muted">/</span><strong>{project.name}</strong><span className="mono muted">{project.origin}</span></>}>
-      <section style={{ display: 'grid', gap: 18 }}>
-        <div className="card" style={{ padding: 20 }}>
-          <h2 style={{ marginTop: 0, fontSize: 17 }}>Step 2 · Prove you own {host}</h2>
+    <Shell active="/app" user={user} toolbar={<div className="crumbs"><Link href="/app">Projects</Link><span className="muted">/</span><strong className="truncate">{project.name}</strong></div>}>
+      <div className="stack" style={{ maxWidth: 860 }}>
+        <div>
+          <SetupSteps current={sv.verified ? 3 : 2} />
+          <div className="page-head" style={{ marginBottom: 0 }}>
+            <div style={{ minWidth: 0 }}>
+              <h1 className="h1 break">{project.name}</h1>
+              <p className="row" style={{ marginTop: 8, gap: 8 }}>
+                <span className="mono muted break">{project.origin}</span>
+                <span className="chip">{project.environment === 'production' ? 'Production' : 'Staging'}</span>
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <section className="card card-pad" aria-labelledby="verify-h">
+          <div className="step-card-head" style={{ marginBottom: 16 }}>
+            <span className={`step-num${sv.verified ? ' done' : ''}`} aria-hidden>{sv.verified ? <Icon name="tick" /> : 2}</span>
+            <div style={{ minWidth: 0 }}>
+              <h2 id="verify-h" className="h2 break">Prove you own {host}</h2>
+              <p className="muted" style={{ margin: '4px 0 0', fontSize: 13.5 }}>Pick one method, publish the value, then check. Unverified sites can never be scanned.</p>
+            </div>
+          </div>
           <VerifyPanel projectId={id} origin={project.origin} token={sv.token} verified={sv.verified} lastReason={sv.last_reason} lastChecked={sv.last_checked_at ? new Date(sv.last_checked_at).toISOString() : null} />
-        </div>
-        <div className="card" style={{ padding: 20, opacity: sv.verified ? 1 : 0.6 }}>
-          <h2 style={{ marginTop: 0, fontSize: 17 }}>Step 3 · Approve what Oddhound may do</h2>
-          {sv.verified ? <RunSetup projectId={id} environment={project.environment} /> : <p className="muted">Verify the site first. Unverified sites can never be scanned.</p>}
-        </div>
-        <div className="card">
-          <div style={{ padding: '14px 16px' }} className="section-title">Runs</div>
+        </section>
+
+        <section className="card card-pad" aria-labelledby="setup-h" aria-disabled={!sv.verified || undefined}>
+          <div className="step-card-head" style={{ marginBottom: sv.verified ? 18 : 0 }}>
+            <span className={`step-num${sv.verified ? '' : ' locked'}`} aria-hidden>{sv.verified ? 3 : <Icon name="lock" />}</span>
+            <div>
+              <h2 id="setup-h" className="h2">Approve what Oddhound may do</h2>
+              <p className="muted" style={{ margin: '4px 0 0', fontSize: 13.5 }}>{sv.verified ? 'Safe defaults are filled in. Adjust anything, then start the run.' : 'Unlocks once the site is verified.'}</p>
+            </div>
+          </div>
+          {sv.verified && <RunSetup projectId={id} environment={project.environment} />}
+        </section>
+
+        <section className="card" aria-labelledby="runs-h">
+          <div className="card-header"><h2 id="runs-h" className="h3"><Icon name="runs" /> Runs</h2><span className="muted tabular" style={{ marginLeft: 'auto', fontSize: 12.5 }}>{runs.length ? `${runs.length} most recent` : ''}</span></div>
           {runs.length ? (
-            <table className="grid"><thead><tr><th>Started</th><th>Type</th><th>Status</th><th>Verified issues</th></tr></thead><tbody>
-              {runs.map((r) => (
-                <tr key={r.id}><td><Link href={`/runs/${r.id}`}>{new Date(r.created_at).toLocaleString()}</Link></td><td>{r.mode === 'retest' ? 'Retest' : 'Exploration'}</td>
-                  <td><StatusBadge value={r.status} /> {r.stop_reason && <span className="muted">({String(r.stop_reason).replace(/_/g, ' ')})</span>}</td><td className="tabular">{r.issues}</td></tr>
-              ))}
-            </tbody></table>
-          ) : <p className="muted" style={{ padding: '0 16px 16px' }}>No runs yet.</p>}
-        </div>
-      </section>
+            <div className="table-wrap">
+              <table className="grid"><thead><tr><th>Started</th><th>Type</th><th>Status</th><th>Verified issues</th></tr></thead><tbody>
+                {runs.map((r) => (
+                  <tr key={r.id}><td><Link href={`/runs/${r.id}`} className="tabular">{new Date(r.created_at).toLocaleString()}</Link></td><td>{r.mode === 'retest' ? 'Retest' : 'Exploration'}</td>
+                    <td><span className="row" style={{ gap: 6 }}><StatusBadge value={r.status} />{r.stop_reason && <span className="muted" style={{ fontSize: 12.5 }}>{String(r.stop_reason).replace(/_/g, ' ')}</span>}</span></td>
+                    <td className="tabular">{r.issues}</td></tr>
+                ))}
+              </tbody></table>
+            </div>
+          ) : <div className="empty empty-sm"><p>No runs yet. Your first run will appear here.</p></div>}
+        </section>
+      </div>
     </Shell>
   );
 }

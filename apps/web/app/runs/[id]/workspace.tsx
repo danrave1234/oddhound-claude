@@ -1,7 +1,7 @@
 'use client';
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { HoundMark, Icon } from '@/ui/icons';
+import { HoundMark, Icon, type IconName } from '@/ui/icons';
 import { StatusBadge, statusLabel, findingStatus } from '@/ui/status';
 import { WorkflowMap } from './workflow-map';
 
@@ -125,117 +125,166 @@ export function RunWorkspace({ initial, controllable, replay, signedIn }: { init
     if (r.ok) window.location.assign(`/runs/${b.runId}`); else setNotice(b.error ?? 'Could not start a retest.');
   }
 
+
   const verifiedCount = snap.findings.filter((f) => f.category === 'verified_issue' && f.verification === 'verified').length;
   const selectedFinding = snap.findings.find((f) => f.id === selected) ?? null;
   const log = snap.events.map((e) => ({ e, text: describe(e) })).filter((x) => x.text);
+  const inspectorRef = useRef<HTMLElement>(null);
+  const viewsRef = useRef<HTMLElement>(null);
+  function selectFinding(id: string) {
+    setSelected(id);
+    // On narrow screens the inspector sits below the list: bring it into view after a user selection.
+    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 900px)').matches) {
+      requestAnimationFrame(() => inspectorRef.current?.scrollIntoView({ block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }));
+    }
+  }
+  const VIEWS: { key: typeof view; label: string; icon: IconName }[] = [
+    { key: 'workflows', label: 'Workflows', icon: 'trail' }, { key: 'browser', label: 'Browser', icon: 'browser' },
+    { key: 'findings', label: 'Findings', icon: 'bug' }, { key: 'activity', label: 'Activity', icon: 'pulse' },
+  ];
 
   return (
     <div>
-      <header className="toolbar" style={{ flexWrap: 'wrap', paddingTop: 6, paddingBottom: 6 }}>
-        <Link href={signedIn ? '/app' : '/'} aria-label="Oddhound home"><HoundMark size={22} /></Link>
-        <strong>{run.mode === 'retest' ? 'Retest' : run.mode === 'demo_target' ? 'Demo target run' : 'Run'}</strong>
-        <span className="mono muted">{run.origin}</span>
+      <header className="toolbar run-toolbar">
+        <Link href={signedIn ? '/app' : '/'} aria-label="Oddhound home" className="brand"><HoundMark size={26} /></Link>
+        <div className="run-title">
+          <span className="name">{run.mode === 'retest' ? 'Retest' : run.mode === 'demo_target' ? 'Demo target run' : 'Run'}</span>
+          <span className="origin truncate">{run.origin}</span>
+        </div>
+        <span className="vsep" aria-hidden />
         {replay && <span className="badge badge-info"><Icon name="eye" />Demo replay — recorded run</span>}
         <StatusBadge value={run.status} />
-        {run.stop_reason && <span className="muted">({String(run.stop_reason).replace(/_/g, ' ')})</span>}
-        {elapsed && <span className="tabular muted" title="Elapsed">{elapsed}</span>}
-        {!replay && <StatusBadge value={conn} />}
-        <span className="muted" style={{ fontSize: 12 }}>Updated {new Date(lastUpdate).toLocaleTimeString()}</span>
-        <span style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+        {run.stop_reason && <span className="muted" style={{ fontSize: 12.5 }}>{String(run.stop_reason).replace(/_/g, ' ')}</span>}
+        {elapsed && <span className="pill-stat tabular" title="Elapsed time"><Icon name="clock" /><span className="sr-only">Elapsed </span><span suppressHydrationWarning>{elapsed}</span></span>}
+        <span className="toolbar-spacer" />
+        <span className="conn">
+          {!replay && <StatusBadge value={conn} />}
+          <span className="tabular" suppressHydrationWarning>Updated {new Date(lastUpdate).toLocaleTimeString()}</span>
+        </span>
+        <span className="row" style={{ gap: 8 }}>
           {controllable && active && <button className="btn btn-danger" onClick={stop} title="Blocks new actions immediately; cannot undo completed actions"><Icon name="stop" /> Stop run</button>}
           {controllable && !active && run.mode !== 'retest' && verifiedCount > 0 && <button className="btn btn-primary" onClick={retest}><Icon name="retest" /> {run.mode === 'demo_target' ? 'Retest on corrected build' : 'Retest after fix'}</button>}
-          {run.parent_run_id && <Link className="btn" href={`/runs/${run.parent_run_id}`}>Original run</Link>}
+          {run.parent_run_id && <Link className="btn" href={`/runs/${run.parent_run_id}`}><Icon name="back" /> Original run</Link>}
         </span>
       </header>
-      {notice && <p role="status" style={{ margin: 0, padding: '8px 16px', background: 'var(--warn-soft)', color: 'var(--warn)' }}>{notice}</p>}
-      {run.provider === 'test-double' && <p role="note" style={{ margin: 0, padding: '8px 16px', background: 'var(--info-soft)', color: 'var(--info)' }}>This run used the offline test double, not Meta inference.</p>}
+      {notice && <p role="status" className="banner banner-warn fade-in"><Icon name="info" /> {notice}</p>}
+      {run.provider === 'test-double' && <p role="note" className="banner banner-info"><Icon name="info" /> This run used the offline test double, not Meta inference.</p>}
 
       <div className="workspace" style={{ ['--inspector-w' as string]: `${inspectorW}px` }}>
-        <section className="pane" aria-label="Run views">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', borderBottom: '1px solid var(--separator)', position: 'sticky', top: 0, background: 'var(--bg)', zIndex: 2 }}>
+        <section className="pane" aria-label="Run views" ref={viewsRef}>
+          <div className="pane-head">
             <div className="segmented" role="group" aria-label="View">
-              {(['workflows', 'browser', 'findings', 'activity'] as const).map((v) => (
-                <button key={v} aria-pressed={view === v} onClick={() => { setView(v); if (v === 'activity') setNewEvents(0); }}>
-                  {v === 'workflows' ? 'Workflows' : v === 'browser' ? 'Browser' : v === 'findings' ? `Findings (${snap.findings.length})` : `Activity${newEvents && view !== 'activity' ? ` · ${newEvents} new` : ''}`}
+              {VIEWS.map((v) => (
+                <button key={v.key} aria-pressed={view === v.key} onClick={() => { setView(v.key); if (v.key === 'activity') setNewEvents(0); }}>
+                  <Icon name={v.icon} /> {v.label}
+                  {v.key === 'findings' && <span className="count tabular">{snap.findings.length}</span>}
+                  {v.key === 'activity' && newEvents > 0 && view !== 'activity' && <span className="count count-new tabular pop-in">{newEvents}<span className="sr-only"> new</span></span>}
                 </button>
               ))}
             </div>
             {view === 'workflows' && (
               <div className="segmented" role="group" aria-label="Workflow layout" style={{ marginLeft: 'auto' }}>
-                <button aria-pressed={wfMode === 'list'} onClick={() => setWfMode('list')}>List</button>
-                <button aria-pressed={wfMode === 'map'} onClick={() => setWfMode('map')}>Map</button>
+                <button aria-pressed={wfMode === 'list'} onClick={() => setWfMode('list')}><Icon name="list" /> List</button>
+                <button aria-pressed={wfMode === 'map'} onClick={() => setWfMode('map')}><Icon name="map" /> Map</button>
               </div>
             )}
           </div>
 
-          <div style={{ padding: 16 }}>
+          <div className="pane-body">
             {controllable && run.status === 'waiting_for_input' && run.handoff_enabled && <HandoffPanel runId={runId} onStop={stop} />}
             {run.mode === 'retest' && (
-              <div className="card" style={{ marginBottom: 14 }}>
-                <div style={{ padding: '10px 12px' }} className="section-title">Retest results — saved assertions replayed unchanged</div>
-                <table className="grid"><thead><tr><th>Finding</th><th>Original check</th><th>Valid control</th><th>Result</th></tr></thead><tbody>
+              <div className="card">
+                <div className="card-header"><h2 className="h3"><Icon name="replay" /> Retest results</h2><span className="muted" style={{ fontSize: 12.5 }}>Saved assertions replayed unchanged</span></div>
+                <div className="table-wrap"><table className="grid"><thead><tr><th>Finding</th><th>Original check</th><th>Valid control</th><th>Result</th></tr></thead><tbody>
                   {snap.events.filter((e) => e.type === 'retest.finished' || e.type === 'retest.blocked').map((e) => (
                     <tr key={e.seq}><td>{e.payload.title ?? e.payload.findingId}</td><td><StatusBadge value={e.payload.outcome ?? 'blocked'} /></td>
                       <td><StatusBadge value={e.payload.control ?? 'not_run'} /></td><td><StatusBadge value={e.payload.lifecycle ?? 'blocked'} /></td></tr>))}
-                  {!snap.events.some((e) => e.type === 'retest.finished') && <tr><td colSpan={4} className="muted">{active ? 'Replaying saved scenarios…' : 'No retest results recorded.'}</td></tr>}
-                </tbody></table>
+                  {!snap.events.some((e) => e.type === 'retest.finished') && <tr><td colSpan={4} className="empty-cell">{active ? 'Replaying saved scenarios…' : 'No retest results recorded.'}</td></tr>}
+                </tbody></table></div>
               </div>
             )}
+
             {view === 'workflows' && (wfMode === 'list' ? (
-              <div style={{ display: 'grid', gap: 14 }}>
-                <div className="card">
-                  <table className="grid"><thead><tr><th>Workflow</th><th>Status</th><th>Summary</th></tr></thead><tbody>
-                    {snap.workflows.length ? snap.workflows.map((w) => <tr key={w.name}><td>{w.name}</td><td><StatusBadge value={w.status} /></td><td className="muted">{w.summary}</td></tr>)
-                      : <tr><td colSpan={3} className="muted">{active ? 'Discovering workflows…' : 'No workflows were named in this run.'}</td></tr>}
-                  </tbody></table>
+              <>
+                <div className="card fade-in">
+                  <div className="card-header"><h2 className="h3"><Icon name="trail" /> Workflows</h2><span className="muted tabular" style={{ marginLeft: 'auto', fontSize: 12.5 }}>{snap.workflows.length}</span></div>
+                  {snap.workflows.length ? (
+                    <div className="table-wrap"><table className="grid"><thead><tr><th>Workflow</th><th>Status</th><th className="hide-sm">Summary</th></tr></thead><tbody>
+                      {snap.workflows.map((w) => <tr key={w.name}><td style={{ fontWeight: 550 }}>{w.name}</td><td><StatusBadge value={w.status} /></td><td className="muted hide-sm">{w.summary}</td></tr>)}
+                    </tbody></table></div>
+                  ) : <Empty icon="paw" text={active ? 'Discovering workflows…' : 'No workflows were named in this run.'} />}
                 </div>
-                <div className="card">
-                  <table className="grid"><thead><tr><th>Observed page state</th><th>Route</th><th>Actor</th><th>Device</th></tr></thead><tbody>
-                    {snap.graph.states.map((s) => <tr key={s.id}><td>{s.title}</td><td className="mono">{s.route}</td><td>{s.actor}</td><td>{s.device}</td></tr>)}
-                  </tbody></table>
-                  <p className="muted" style={{ padding: '8px 12px', margin: 0 }}>{snap.graph.states.length} states and {snap.graph.transitions.length} observed transitions. Coverage means these observed states, not the whole site.</p>
+                <div className="card fade-in">
+                  <div className="card-header"><h2 className="h3"><Icon name="browser" /> Observed page states</h2></div>
+                  {snap.graph.states.length ? (
+                    <div className="table-wrap"><table className="grid"><thead><tr><th>Page</th><th>Route</th><th className="hide-sm">Actor</th><th>Device</th></tr></thead><tbody>
+                      {snap.graph.states.map((s) => <tr key={s.id}><td>{s.title}</td><td className="mono break">{s.route}</td><td className="hide-sm">{s.actor}</td><td><span className="chip"><Icon name={s.device === 'mobile' ? 'mobile' : 'desktop'} />{s.device}</span></td></tr>)}
+                    </tbody></table></div>
+                  ) : <Empty icon="browser" text={active ? 'No page states recorded yet.' : 'No page states were recorded.'} />}
+                  <div className="card-footer"><span className="muted" style={{ fontSize: 12.5 }}><span className="tabular">{snap.graph.states.length}</span> states and <span className="tabular">{snap.graph.transitions.length}</span> observed transitions. Coverage means these observed states, not the whole site.</span></div>
                 </div>
-              </div>
+              </>
             ) : <WorkflowMap states={snap.graph.states} transitions={snap.graph.transitions} />)}
 
             {view === 'browser' && (
-              <div className="card" style={{ padding: 12 }}>
-                {snap.latestScreenshot
-                  ? <><img className="evidence-img" src={`/api/artifacts/${snap.latestScreenshot.id}`} alt={`Latest browser frame: ${snap.latestScreenshot.label}`} />
-                      <p className="muted" style={{ margin: '8px 0 0' }}>Sampled frame from {new Date(snap.latestScreenshot.created_at).toLocaleTimeString()} ({snap.latestScreenshot.label}). This is a still frame, not live video.</p></>
-                  : <p className="muted">No browser frame captured yet.</p>}
-                <h3 className="section-title" style={{ marginTop: 16 }}>Recent actions</h3>
-                <ul className="log" style={{ padding: 0 }}>{snap.actions.slice(0, 15).map((a) => (
-                  <li key={a.seq}><span className="tabular muted">#{a.seq}</span> {a.tool} <span className="muted">· actor {a.actor} · {a.device} · {a.state}</span></li>))}</ul>
-              </div>
+              <>
+                <div className="frame fade-in">
+                  <div className="frame-bar">
+                    <Icon name="evidence" />
+                    <span className="frame-addr"><span>{snap.latestScreenshot ? snap.latestScreenshot.label : 'No frame yet'}</span></span>
+                    {snap.latestScreenshot && <span className="muted tabular" style={{ fontSize: 12 }}>{new Date(snap.latestScreenshot.created_at).toLocaleTimeString()}</span>}
+                  </div>
+                  {snap.latestScreenshot
+                    ? <div className="frame-body"><img src={`/api/artifacts/${snap.latestScreenshot.id}`} alt={`Latest browser frame: ${snap.latestScreenshot.label}`} /></div>
+                    : <Empty icon="browser" text="No browser frame captured yet." />}
+                </div>
+                {snap.latestScreenshot && <p className="muted" style={{ margin: '-6px 0 0', fontSize: 12.5 }}>A sampled still frame, not live video.</p>}
+                <div className="card">
+                  <div className="card-header"><h2 className="h3"><Icon name="list" /> Recent actions</h2></div>
+                  {snap.actions.length ? (
+                    <ol className="list" style={{ margin: 0, padding: 0, listStyle: 'none' }}>
+                      {snap.actions.slice(0, 15).map((a) => (
+                        <li key={a.seq} className="list-row" style={{ gridTemplateColumns: 'auto minmax(0,1fr)', padding: '10px 16px' }}>
+                          <span className="chip tabular">#{a.seq}</span>
+                          <span style={{ minWidth: 0 }}><span className="mono" style={{ fontWeight: 600 }}>{a.tool}</span>
+                            <span className="meta" style={{ marginTop: 2 }}>actor {a.actor} · {a.device} · {a.state}</span></span>
+                        </li>))}
+                    </ol>
+                  ) : <Empty icon="list" text="No actions recorded yet." />}
+                </div>
+              </>
             )}
 
             {view === 'findings' && (
-              <div style={{ display: 'grid', gap: 14 }}>
+              <>
                 {GROUPS.map((g) => {
                   const items = snap.findings.filter((f) => f.category === g.key);
                   return (
-                    <div className="card" key={g.key}>
-                      <div style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 8 }}><StatusBadge value={g.key} /><span className="muted tabular">{items.length}</span></div>
+                    <div className="card fade-in" key={g.key}>
+                      <div className="card-header"><div className="group-head"><StatusBadge value={g.key} /><span className="count">{items.length}</span></div></div>
                       {items.length ? (
-                        <table className="grid"><thead><tr><th>Title</th><th>Status</th><th>Impact</th><th>Device</th><th>Rule</th></tr></thead><tbody>
+                        <div className="table-wrap"><table className="grid selectable"><thead><tr><th>Title</th><th>Status</th><th className="hide-sm">Impact</th><th className="hide-sm">Device</th><th className="hide-sm">Rule</th></tr></thead><tbody>
                           {items.map((f) => (
-                            <tr key={f.id} aria-selected={f.id === selected} tabIndex={0} onClick={() => setSelected(f.id)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelected(f.id); } }}>
-                              <td>{f.title}</td><td><StatusBadge value={findingStatus(f as never)} /></td><td>{f.impact}</td><td>{f.device}</td><td className="mono">{f.rule_id ?? '—'}</td>
+                            <tr key={f.id} aria-selected={f.id === selected} tabIndex={0} onClick={() => selectFinding(f.id)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectFinding(f.id); } }}>
+                              <td style={{ fontWeight: 550, minWidth: 160 }}>{f.title}</td><td><StatusBadge value={findingStatus(f as never)} /></td><td className="hide-sm">{f.impact}</td><td className="hide-sm">{f.device}</td><td className="mono hide-sm">{f.rule_id ?? '—'}</td>
                             </tr>))}
-                        </tbody></table>
-                      ) : <p className="muted" style={{ padding: '0 12px 10px', margin: 0 }}>None.</p>}
+                        </tbody></table></div>
+                      ) : <p className="muted" style={{ padding: '12px 16px', margin: 0, fontSize: 13 }}>None in this run.</p>}
                     </div>
                   );
                 })}
-                {!active && <p className="muted">“No failures” only means none were found within the tested scope above, not that the site has no bugs.</p>}
-              </div>
+                {!active && <p className="muted" style={{ margin: 0, fontSize: 12.5, display: 'flex', gap: 6 }}><Icon name="info" /> “No failures” only means none were found within the tested scope above, not that the site has no bugs.</p>}
+              </>
             )}
 
             {view === 'activity' && (
-              <ol className="log" style={{ padding: 0 }} aria-live="off">
-                {log.map(({ e, text }) => <li key={e.seq}><span className="tabular muted">{new Date(e.at).toLocaleTimeString()}</span> {text}</li>)}
-              </ol>
+              <div className="card fade-in" style={{ padding: '10px 16px' }}>
+                {log.length ? (
+                  <ol className="timeline" aria-live="off">
+                    {log.map(({ e, text }) => <li key={e.seq} className={`k-${kindOf(e.type)}`}><span className="t">{new Date(e.at).toLocaleTimeString()}</span><span className="d" aria-hidden /><span className="break">{text}</span></li>)}
+                  </ol>
+                ) : <Empty icon="pulse" text="No activity recorded yet." />}
+              </div>
             )}
           </div>
         </section>
@@ -243,9 +292,12 @@ export function RunWorkspace({ initial, controllable, replay, signedIn }: { init
         <div className="resizer" role="separator" aria-orientation="vertical" aria-label="Resize inspector" tabIndex={0} onPointerDown={startResize}
           onKeyDown={(e) => { if (e.key === 'ArrowLeft') setInspectorW((w) => Math.min(800, w + 20)); if (e.key === 'ArrowRight') setInspectorW((w) => Math.max(300, w - 20)); }} />
 
-        <aside className="pane" aria-label="Inspector" style={{ background: 'var(--surface)', padding: 16 }}>
-          {selectedFinding ? <FindingInspector finding={selectedFinding} controllable={controllable} onRetest={retest} runActive={active} runMode={run.mode} />
-            : <RunDetails snap={snap} />}
+        <aside className="pane inspector" aria-label="Inspector" ref={inspectorRef}>
+          <div className="inspector-body">
+            {selectedFinding ? <FindingInspector finding={selectedFinding} controllable={controllable} onRetest={retest} runActive={active} runMode={run.mode}
+                onBack={() => viewsRef.current?.scrollIntoView({ block: 'start' })} />
+              : <RunDetails snap={snap} />}
+          </div>
         </aside>
       </div>
       <div aria-live="polite" className="sr-only">{`Run ${statusLabel(run.status)}. ${verifiedCount} verified issues.`}</div>
@@ -253,27 +305,42 @@ export function RunWorkspace({ initial, controllable, replay, signedIn }: { init
   );
 }
 
+function kindOf(type: string): 'bad' | 'ok' | 'warn' | 'accent' | 'plain' {
+  if (['finding.verified', 'run.error', 'provider.error', 'browser.destroy_unconfirmed', 'site.verification_failed', 'budget.denied'].includes(type)) return 'bad';
+  if (['site.verified', 'browser.ready', 'browser.terminated', 'handoff.completed'].includes(type)) return 'ok';
+  if (['finding.candidate', 'finding.inconclusive', 'scope.denied', 'egress.denied', 'handoff.timed_out', 'handoff.cancelled', 'model.truncated'].includes(type)) return 'warn';
+  if (['state.discovered', 'workflow.updated', 'handoff.started', 'finding.verifying'].includes(type)) return 'accent';
+  return 'plain';
+}
+
+function Empty({ icon, text }: { icon: IconName; text: string }) {
+  return <div className="empty empty-sm"><span className="tile tile-neutral"><Icon name={icon} /></span><p>{text}</p></div>;
+}
+
 function RunDetails({ snap }: { snap: Snapshot }) {
   const r = snap.run;
   return (
-    <div style={{ display: 'grid', gap: 12 }}>
-      <h2 style={{ margin: 0, fontSize: 16 }}>Run details</h2>
-      <dl style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 12px', margin: 0 }}>
-        <dt className="muted">Model</dt><dd style={{ margin: 0 }}>{r.provider ? `${r.provider === 'meta-direct' ? 'Meta (direct)' : r.provider} · ${r.model}` : 'Not selected yet'}</dd>
-        <dt className="muted">Browser</dt><dd style={{ margin: 0 }} className="mono">{r.browser_ref ?? '—'} ({r.browser_state ?? '—'})</dd>
-        <dt className="muted">Chromium sandbox</dt><dd style={{ margin: 0 }}>{r.sandbox_verdict ?? '—'}</dd>
-        <dt className="muted">Environment</dt><dd style={{ margin: 0 }}>{r.environment} · {r.test_mode === 'active' ? 'active testing' : 'observation only'}</dd>
-        <dt className="muted">Model spend</dt><dd style={{ margin: 0 }} className="tabular">${(snap.spend.settled / 1e6).toFixed(4)} settled{snap.spend.outstanding ? ` + $${(snap.spend.outstanding / 1e6).toFixed(4)} reserved` : ''}</dd>
+    <div style={{ display: 'grid', gap: 20 }} className="fade-in">
+      <div className="row" style={{ gap: 10 }}><span className="tile"><Icon name="info" /></span><h2 className="h2">Run details</h2></div>
+      <dl className="props">
+        <dt>Model</dt><dd>{r.provider ? `${r.provider === 'meta-direct' ? 'Meta (direct)' : r.provider} · ${r.model}` : 'Not selected yet'}</dd>
+        <dt>Browser</dt><dd className="mono">{r.browser_ref ?? '—'} ({r.browser_state ?? '—'})</dd>
+        <dt>Chromium sandbox</dt><dd>{r.sandbox_verdict ?? '—'}</dd>
+        <dt>Environment</dt><dd>{r.environment} · {r.test_mode === 'active' ? 'active testing' : 'observation only'}</dd>
+        <dt>Model spend</dt><dd className="tabular">${(snap.spend.settled / 1e6).toFixed(4)} settled{snap.spend.outstanding ? ` + $${(snap.spend.outstanding / 1e6).toFixed(4)} reserved` : ''}</dd>
       </dl>
-      <div><div className="section-title">Goals</div><ol style={{ margin: '4px 0 0', paddingLeft: 18 }}>{(r.goals ?? []).map((g: string) => <li key={g}>{g}</li>)}</ol></div>
-      <div><div className="section-title">Rules (findings are judged only against these)</div><ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>{(r.rules ?? []).map((x: { id: string; text: string }) => <li key={x.id}><span className="mono">{x.id}</span> {x.text}</li>)}</ul></div>
-      {snap.retests.length > 0 && <div><div className="section-title">Retests</div>{snap.retests.map((t) => <div key={t.id}><Link href={`/runs/${t.id}`}>{new Date(t.created_at).toLocaleString()}</Link> <StatusBadge value={t.status} /></div>)}</div>}
-      <p className="muted" style={{ margin: 0 }}>Select a finding to see its evidence and fix brief.</p>
+      <section className="section"><h3 className="section-title">Goals</h3>
+        <ol style={{ margin: 0, paddingLeft: 18, display: 'grid', gap: 4, listStyle: 'decimal' }}>{(r.goals ?? []).map((g: string) => <li key={g}>{g}</li>)}</ol></section>
+      <section className="section"><h3 className="section-title">Rules — findings are judged only against these</h3>
+        {(r.rules ?? []).length ? <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'grid', gap: 6 }}>{(r.rules ?? []).map((x: { id: string; text: string }) => <li key={x.id} className="row" style={{ alignItems: 'flex-start', flexWrap: 'nowrap', gap: 8 }}><span className="chip mono">{x.id}</span><span>{x.text}</span></li>)}</ul>
+          : <p className="muted">No explicit rules were given.</p>}</section>
+      {snap.retests.length > 0 && <section className="section"><h3 className="section-title">Retests</h3>{snap.retests.map((t) => <div key={t.id} className="row" style={{ gap: 8 }}><Link href={`/runs/${t.id}`} className="tabular">{new Date(t.created_at).toLocaleString()}</Link> <StatusBadge value={t.status} /></div>)}</section>}
+      <div className="well row" style={{ gap: 10, flexWrap: 'nowrap' }}><Icon name="bug" /><span className="muted" style={{ fontSize: 13 }}>Select a finding to see its evidence and fix prompt.</span></div>
     </div>
   );
 }
 
-function FindingInspector({ finding: f, controllable, onRetest, runActive, runMode }: { finding: Record<string, any>; controllable: boolean; onRetest: () => void; runActive: boolean; runMode: string }) {
+function FindingInspector({ finding: f, controllable, onRetest, runActive, runMode, onBack }: { finding: Record<string, any>; controllable: boolean; onRetest: () => void; runActive: boolean; runMode: string; onBack: () => void }) {
   const [brief, setBrief] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
   useEffect(() => { setBrief(null); setCopyState('idle'); }, [f.id]);
@@ -283,25 +350,33 @@ function FindingInspector({ finding: f, controllable, onRetest, runActive, runMo
     try { await navigator.clipboard.writeText(text); setCopyState('copied'); } catch { setCopyState('failed'); }
   }
   return (
-    <article style={{ display: 'grid', gap: 12 }} className="fade-in">
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}><StatusBadge value={f.category} />{f.category === 'configuration_observation' ? <StatusBadge value="observed" /> : <><StatusBadge value={f.verification} />{f.lifecycle && <StatusBadge value={f.lifecycle} />}</>}</div>
-      <h2 style={{ margin: 0, fontSize: 17 }}>{f.title}</h2>
-      <p className="muted" style={{ margin: 0 }}>Impact {f.impact} · confidence {f.confidence} · {f.device} · actor {f.actor} · {f.rule_source}</p>
-      <section><div className="section-title">Expected</div><p style={{ margin: '4px 0 0' }}>{f.expected}</p></section>
-      <section><div className="section-title">Observed</div><p style={{ margin: '4px 0 0' }}>{f.observed}</p></section>
-      {f.limitations && <section><div className="section-title">Limits</div><p className="muted" style={{ margin: '4px 0 0' }}>{f.limitations}</p></section>}
+    <article style={{ display: 'grid', gap: 16 }} className="fade-in" key={f.id}>
+      <button className="btn btn-ghost btn-sm mobile-only" onClick={onBack} style={{ justifySelf: 'start' }}><Icon name="back" /> Back to findings</button>
+      <div className="kv-strip"><StatusBadge value={f.category} />{f.category === 'configuration_observation' ? <StatusBadge value="observed" /> : <><StatusBadge value={f.verification} />{f.lifecycle && <StatusBadge value={f.lifecycle} />}</>}</div>
+      <h2 className="finding-title">{f.title}</h2>
+      <div className="kv-strip">
+        <span className="chip">Impact {f.impact}</span><span className="chip">Confidence {f.confidence}</span>
+        <span className="chip"><Icon name={f.device === 'mobile' ? 'mobile' : 'desktop'} />{f.device}</span><span className="chip"><Icon name="person" />{f.actor}</span>
+        {f.rule_source && <span className="chip">{f.rule_source}</span>}
+      </div>
+      <div className="compare">
+        <div className="exp"><div className="lbl"><Icon name="check" /> Expected</div><p style={{ margin: 0 }}>{f.expected}</p></div>
+        <div className="obs"><div className="lbl"><Icon name="fail" /> Observed</div><p style={{ margin: 0 }}>{f.observed}</p></div>
+      </div>
+      {f.limitations && <section className="section"><h3 className="section-title">Limits</h3><p className="muted">{f.limitations}</p></section>}
       {f.scenario_id && (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button className="btn btn-primary" onClick={copy}><Icon name="copy" /> Copy fix prompt</button>
+        <div className="row" style={{ gap: 8 }}>
+          <button className="btn btn-primary" onClick={copy}>{copyState === 'copied' ? <span className="pop-in" style={{ display: 'inline-flex' }}><Icon name="tick" /></span> : <Icon name="brief" />} {copyState === 'copied' ? 'Copied' : 'Copy fix prompt'}</button>
           <a className="btn" href={`/api/findings/${f.id}/export`}><Icon name="download" /> Playwright test</a>
           {controllable && !runActive && runMode !== 'retest' && f.category === 'verified_issue' && <button className="btn" onClick={onRetest}><Icon name="retest" /> Retest</button>}
         </div>
       )}
-      <span role="status" style={{ color: copyState === 'copied' ? 'var(--ok)' : 'var(--warn)' }}>{copyState === 'copied' ? 'Fix prompt copied.' : copyState === 'failed' ? 'Clipboard unavailable — select the text below.' : ''}</span>
-      {brief && <pre className="brief" tabIndex={0} aria-label="Fix brief">{brief}</pre>}
+      <span role="status" className="status-line" style={{ color: copyState === 'copied' ? 'var(--ok)' : 'var(--warn)', minHeight: copyState === 'idle' ? 0 : undefined }}>
+        {copyState === 'copied' ? <><Icon name="check" /> Fix prompt copied — paste it into your coding AI.</> : copyState === 'failed' ? <><Icon name="alert" /> Clipboard unavailable — select the text below.</> : ''}</span>
+      {brief && <pre className="brief fade-in" tabIndex={0} aria-label="Fix brief">{brief}</pre>}
       {(f.evidence_ids ?? []).length > 0 && (
-        <section><div className="section-title">Evidence ({f.evidence_ids.length})</div>
-          <div style={{ display: 'grid', gap: 8, marginTop: 6 }}>{f.evidence_ids.slice(0, 6).map((id: string) => <img key={id} className="evidence-img" src={`/api/artifacts/${id}`} alt="Evidence screenshot from an independent replay" loading="lazy" />)}</div>
+        <section className="section"><h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Icon name="evidence" /> Evidence ({f.evidence_ids.length})</h3>
+          <div style={{ display: 'grid', gap: 10, marginTop: 4 }}>{f.evidence_ids.slice(0, 6).map((id: string) => <img key={id} className="evidence-img" src={`/api/artifacts/${id}`} alt="Evidence screenshot from an independent replay" loading="lazy" />)}</div>
         </section>
       )}
     </article>
@@ -314,6 +389,7 @@ function HandoffPanel({ runId, onStop }: { runId: string; onStop: () => void }) 
   const [path, setPath] = useState('');
   const [msg, setMsg] = useState<string | null>(null);
   const [handing, setHanding] = useState(false);
+  const [focused, setFocused] = useState(false);
   const buffer = useRef('');
   const flushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const imgRef = useRef<HTMLImageElement>(null);
@@ -364,24 +440,36 @@ function HandoffPanel({ runId, onStop }: { runId: string; onStop: () => void }) 
   async function done() { flush(); setHanding(true); await send({ type: 'done' }); }
 
   return (
-    <div className="card" style={{ padding: 12, marginBottom: 14, display: 'grid', gap: 10 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <strong>Sign in, then hand over</strong>
-        <span className="muted mono" style={{ fontSize: 12 }}>{path}</span>
-        <span style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-          <button className="btn" onClick={() => { flush(); void send({ type: 'back' }); }}>Back</button>
-          <button className="btn btn-primary" onClick={done} disabled={handing}><Icon name="play" /> {handing ? 'Handing over…' : "I’m signed in — start testing"}</button>
+    <section className="handoff fade-in" aria-labelledby="handoff-title">
+      <div className="handoff-head">
+        <span className="tile"><Icon name="pointer" /></span>
+        <div style={{ minWidth: 0, flex: '1 1 200px' }}>
+          <h2 id="handoff-title" className="h3">Sign in, then hand over</h2>
+          <p className="muted" style={{ margin: '2px 0 0', fontSize: 13 }}>The agent is waiting. It starts only after you hand over.</p>
+        </div>
+        <span className="row" style={{ gap: 8 }}>
+          <button className="btn btn-primary" onClick={done} disabled={handing} aria-busy={handing || undefined}><Icon name="play" /> {handing ? 'Handing over…' : 'I’m signed in — start testing'}</button>
           <button className="btn btn-danger" onClick={onStop}>Cancel</button>
         </span>
       </div>
-      <p className="muted" style={{ margin: 0 }}>This is the run's own fresh browser. Click into the picture, then type. Sign in the way you normally do. What you type goes to the site through Oddhound and is not saved or shown to the AI model. The agent starts only after you hand over.</p>
-      <div tabIndex={0} onKeyDown={onKey} onPaste={(e) => { const t = e.clipboardData.getData('text'); if (t) { e.preventDefault(); flush(); void send({ type: 'type', text: t.slice(0, 500) }); } }}
-        onWheel={(e) => { void send({ type: 'scroll', dy: Math.max(-1500, Math.min(1500, Math.round(e.deltaY))) }); }}
-        aria-label="Live view of the run's browser. Click to focus, then type." style={{ outline: '2px solid var(--separator)', borderRadius: 8, overflow: 'hidden', cursor: 'pointer' }}>
-        {src ? <img ref={imgRef} src={src} alt="Live view of the run's browser" onClick={onClick} draggable={false} style={{ display: 'block', width: '100%', height: 'auto' }} />
-          : <p className="muted" style={{ padding: 24, margin: 0 }}>Starting the browser…</p>}
+      <div className="handoff-body">
+        <p className="text-2" style={{ margin: 0, fontSize: 13.5 }}>This is the run&apos;s own fresh browser. Click into the picture, then type — sign in the way you normally do. What you type goes to the site through Oddhound and is not saved or shown to the AI model.</p>
+        <div className="live-surface" tabIndex={0} onKeyDown={onKey} onFocus={() => setFocused(true)} onBlur={() => { flush(); setFocused(false); }}
+          onPaste={(e) => { const t = e.clipboardData.getData('text'); if (t) { e.preventDefault(); flush(); void send({ type: 'type', text: t.slice(0, 500) }); } }}
+          onWheel={(e) => { void send({ type: 'scroll', dy: Math.max(-1500, Math.min(1500, Math.round(e.deltaY))) }); }}
+          aria-label="Live view of the run's browser. Click to focus, then type.">
+          <div className="frame-bar">
+            <button type="button" className="icon-btn" style={{ width: 28, height: 28 }} onKeyDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); flush(); void send({ type: 'back' }); }} aria-label="Back" title="Back"><Icon name="back" /></button>
+            <span className="frame-addr"><Icon name="lock" /><span>{path || '…'}</span></span>
+            <span className="conn" style={{ color: focused ? 'var(--ok)' : 'var(--text-3)' }}><Icon name={focused ? 'tick' : 'pointer'} /> {focused ? 'Typing goes to the site' : 'Click to control'}</span>
+          </div>
+          <div className="frame-body">
+            {src ? <img ref={imgRef} src={src} alt="Live view of the run's browser" onClick={onClick} draggable={false} />
+              : <div className="empty empty-sm" style={{ background: 'var(--surface)' }}><span className="tile tile-neutral"><Icon name="browser" /></span><p>Starting the browser…</p></div>}
+          </div>
+        </div>
+        {msg && <p role="alert" className="status-line" style={{ color: 'var(--warn)' }}><Icon name="alert" /> {msg}</p>}
       </div>
-      {msg && <p role="alert" style={{ margin: 0, color: 'var(--warn)' }}>{msg}</p>}
-    </div>
+    </section>
   );
 }

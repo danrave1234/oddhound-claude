@@ -14,12 +14,13 @@ export function TryDemoButton({ disabled, reason }: { disabled: boolean; reason:
     if (res.ok) router.push(`/runs/${body.runId}`);
     else { setError(body.error ?? 'Could not start a demo run.'); setBusy(false); }
   }
+  const message = error ?? (disabled ? reason : '');
   return (
-    <span style={{ display: 'inline-grid', gap: 4 }}>
-      <button className="btn btn-lg" onClick={start} disabled={disabled || busy} aria-describedby="demo-msg">
-        <Icon name="play" /> {busy ? 'Starting…' : 'Try the demo target'}
+    <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
+      <button className="btn btn-lg" onClick={start} disabled={disabled || busy} aria-describedby="demo-msg" aria-busy={busy || undefined}>
+        <Icon name="play" /> {busy ? 'Starting a fresh browser…' : 'Try the demo target'}
       </button>
-      <span id="demo-msg" role="status" className="muted" style={{ fontSize: 12.5 }}>{error ?? (disabled ? reason : '')}</span>
+      <span id="demo-msg" role="status" style={{ fontSize: 12.5, color: error ? 'var(--bad)' : 'var(--text-3)', maxWidth: 260 }}>{message}</span>
     </span>
   );
 }
