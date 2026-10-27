@@ -100,7 +100,9 @@ Built because test accounts, staging copies and bot-check changes were too much 
 | Meta availability by network | From Fly Singapore the API listed no models; from several US/AP regions `muse-spark-1.3` was intermittently `model_not_found` (Virginia 1/10, Chicago 6/8, Sydney 8/8 in one sample). The worker now retries only that unbilled 404, at most 8 attempts, each logged as `provider.retry`. This run needed none. |
 | Truthful status | A model-provider failure now ends the run as `failed` (an earlier deployed run was wrongly shown as `completed`). |
 | Repository gap fixed | A `.gitignore` rule (`artifacts/`) had kept `packages/core/artifacts/store.ts` and the artifact API route out of git; both are now tracked. Deployed images are built from committed code only (`git archive HEAD`). |
-| Not yet verified on the deployment | GitHub sign-in end to end, verified-site scans and the handoff on Fly, retest on the fixed demo build from the live UI. |
+| GitHub sign-in | **Works on the deployment.** Drave signed in with GitHub (the OAuth password step was done by Drave, not the agent). |
+| Verified-site run 1f6c5775 (www.danravekeh.com) | Project created in the live UI; new token published in the portfolio's `/.well-known` file (portfolio commit ea559d5, live ~30 s later); **Check now → verified**; re-checked by the run. Production default = **observation only**. Real `muse-spark-1.3`, 10 actions in 1 min, $0.10; Fly Machine 78124d7fde6d28, **sandbox on**, destroyed and confirmed. The agent reported no accounts or forms on the site (contact is mailto links only), so **0 verified issues within that scope**; 2 configuration observations (no CSP, frameable). |
+| Not yet verified on the deployment | The sign-in handoff on Fly, an active (write) run on a real site, retest on the fixed demo build from the live UI. |
 
 ## 4. Spec gates (R0–R7) — where this build stands
 
