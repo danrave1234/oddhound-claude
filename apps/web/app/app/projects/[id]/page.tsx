@@ -6,6 +6,7 @@ import { Icon } from '@/ui/icons';
 import { SetupSteps } from '@/ui/setup-steps';
 import { currentUser, db } from '@/lib/server';
 import { VerifyPanel } from './verify-panel';
+import { ApiOrigins } from './api-origins';
 import { RunSetup } from './run-setup';
 
 export const dynamic = 'force-dynamic';
@@ -17,7 +18,10 @@ export default async function Project({ params }: { params: Promise<{ id: string
   if (!/^[0-9a-f-]{36}$/.test(id)) notFound();
   const project = (await db().query('SELECT id, name, origin, environment, description FROM projects WHERE id = $1 AND owner_id = $2', [id, user.id])).rows[0];
   if (!project) notFound();
-  const sv = (await db().query('SELECT token, method, verified, last_reason, last_checked_at FROM site_verifications WHERE project_id = $1 ORDER BY revision DESC LIMIT 1', [id])).rows[0];
+  const sv = (await db().query('SELECT token, method, verified, last_reason, last_checked_at FROM site_verifications WHERE project_id = $1 AND origin = $2 ORDER BY revision DESC LIMIT 1', [id, project.origin])).rows[0];
+  // Other first-party API origins the UI calls. Each needs its own ownership proof (MVP §17).
+  const apis = (await db().query(`SELECT DISTINCT ON (origin) origin, token, method, verified, last_reason, last_checked_at FROM site_verifications
+    WHERE project_id = $1 AND origin <> $2 ORDER BY origin, revision DESC`, [id, project.origin])).rows;
   const runs = (await db().query(`SELECT id, mode, status, stop_reason, created_at, (SELECT count(*) FROM findings f WHERE f.run_id = r.id AND f.verification = 'verified' AND f.category = 'verified_issue')::int AS issues
     FROM runs r WHERE project_id = $1 ORDER BY created_at DESC LIMIT 20`, [id])).rows;
   const host = new URL(project.origin).hostname;
@@ -46,6 +50,9 @@ export default async function Project({ params }: { params: Promise<{ id: string
             </div>
           </div>
           <VerifyPanel projectId={id} origin={project.origin} token={sv.token} verified={sv.verified} lastReason={sv.last_reason} lastChecked={sv.last_checked_at ? new Date(sv.last_checked_at).toISOString() : null} />
+          {sv.verified && <ApiOrigins projectId={id} siteOrigin={project.origin} apis={apis.map((a) => ({
+            origin: a.origin as string, token: a.token as string, verified: Boolean(a.verified), lastReason: a.last_reason as string | null,
+            lastChecked: a.last_checked_at ? new Date(a.last_checked_at).toISOString() : null }))} />}
         </section>
 
         <section className="card card-pad" aria-labelledby="setup-h" aria-disabled={!sv.verified || undefined}>

@@ -29,8 +29,12 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   if (!mayScanVerifiedSites(user)) return json({ error: 'Verified-site scanning is invite-only for now.' }, 403);
   const project = (await db().query('SELECT id, origin, environment, description FROM projects WHERE id = $1 AND owner_id = $2', [id, user.id])).rows[0];
   if (!project) return json({ error: 'Not found' }, 404);
-  const sv = (await db().query('SELECT revision, method, verified, last_checked_at FROM site_verifications WHERE project_id = $1 ORDER BY revision DESC LIMIT 1', [id])).rows[0];
+  const sv = (await db().query('SELECT revision, method, verified, last_checked_at FROM site_verifications WHERE project_id = $1 AND origin = $2 ORDER BY revision DESC LIMIT 1', [id, project.origin])).rows[0];
   if (!sv?.verified) return json({ error: 'Verify that you own this site before starting a run.' }, 409);
+  // Only verified API hosts enter scope; an added but unverified host stays a public resource.
+  const apiOrigins = (await db().query<{ origin: string; revision: number; verified: boolean }>(
+    `SELECT DISTINCT ON (origin) origin, revision, verified FROM site_verifications WHERE project_id = $1 AND origin <> $2 ORDER BY origin, revision DESC`,
+    [id, project.origin])).rows.filter((a) => a.verified).map((a) => ({ origin: a.origin, verificationRevision: a.revision }));
 
   const parsed = Body.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return json({ error: 'Check the run settings.', issues: parsed.error.issues }, 400);
@@ -46,7 +50,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   const writes = b.testMode === 'active';
   const contract = RunContractSchema.parse({
     version: 1,
-    target: { origin: project.origin, environment: project.environment, apiOrigins: [], verification: { kind: 'owner_verified', method: sv.method, revision: sv.revision, checkedAt: new Date(sv.last_checked_at).toISOString() } },
+    target: { origin: project.origin, environment: project.environment, apiOrigins, verification: { kind: 'owner_verified', method: sv.method, revision: sv.revision, checkedAt: new Date(sv.last_checked_at).toISOString() } },
     testMode: b.testMode,
     productionWritesAcknowledged: b.productionWritesAcknowledged,
     description: project.description || 'No description provided.',

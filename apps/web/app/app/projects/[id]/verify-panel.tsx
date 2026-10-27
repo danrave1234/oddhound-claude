@@ -18,15 +18,15 @@ function CopyField({ value, label }: { value: string; label: string }) {
   );
 }
 
-export function VerifyPanel({ projectId, origin, token, verified, lastReason, lastChecked }: { projectId: string; origin: string; token: string; verified: boolean; lastReason: string | null; lastChecked: string | null }) {
+export function VerifyPanel({ projectId, origin, token, verified, lastReason, lastChecked, apiOrigin = false, initialMethod = 'well_known_file' }: { projectId: string; origin: string; token: string; verified: boolean; lastReason: string | null; lastChecked: string | null; apiOrigin?: boolean; initialMethod?: Method }) {
   const router = useRouter();
-  const [method, setMethod] = useState<Method>('well_known_file');
+  const [method, setMethod] = useState<Method>(initialMethod);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ verified: boolean; reason: string } | null>(null);
   const host = new URL(origin).hostname;
   async function check() {
     setBusy(true);
-    const res = await fetch(`/api/projects/${projectId}/verify`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ method }) });
+    const res = await fetch(`/api/projects/${projectId}/verify`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(apiOrigin ? { method, origin } : { method }) });
     setResult(await res.json());
     setBusy(false);
     router.refresh();

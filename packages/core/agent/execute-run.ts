@@ -90,6 +90,19 @@ export async function executeRun(deps: ExecuteDeps, runId: string): Promise<RunS
       if (sv) await db.query('UPDATE site_verifications SET verified = $2, last_reason = $3, last_checked_at = now() WHERE id = $1', [sv.id, result.verified, result.reason]);
       await ev(result.verified ? 'site.verified' : 'site.verification_failed', { origin: contract.target.origin, method: result.method, reason: result.reason });
       if (!result.verified) { await refundIfNeverStarted(db, runId); await finish('blocked', `ownership_not_verified:${result.reason}`); return await done(); }
+      // Each API origin in scope has its own proof, re-checked the same way. Any failure blocks the run
+      // rather than silently dropping the origin, so the run never acts with authority it lacks.
+      for (const api of contract.target.apiOrigins) {
+        const row = (await db.query<{ id: string; token: string; method: VerificationMethod | null }>(
+          `SELECT id, token, method FROM site_verifications WHERE project_id = $1 AND origin = $2 AND revision = $3 AND verified`,
+          [run.project_id, api.origin, api.verificationRevision])).rows[0];
+        const r = row?.method
+          ? await (deps.verify ?? verifyOwnership)(api.origin, row.token, row.method, { lab: deps.lab })
+          : { verified: false, method: row?.method ?? 'dns_txt', reason: 'no_current_verification', checkedAt: new Date().toISOString() };
+        if (row) await db.query('UPDATE site_verifications SET verified = $2, last_reason = $3, last_checked_at = now() WHERE id = $1', [row.id, r.verified, r.reason]);
+        await ev(r.verified ? 'site.verified' : 'site.verification_failed', { origin: api.origin, method: r.method, reason: r.reason, api: true });
+        if (!r.verified) { await refundIfNeverStarted(db, runId); await finish('blocked', `api_origin_not_verified:${r.reason}`); return await done(); }
+      }
     }
 
     // The demo target is shared: reset it to a clean, known state before each demo run or retest.

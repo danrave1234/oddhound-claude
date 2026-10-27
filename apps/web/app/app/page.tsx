@@ -12,7 +12,7 @@ export default async function Projects() {
   const user = await currentUser();
   if (!user) redirect('/login?next=/app');
   const projects = (await db().query(`SELECT p.id, p.name, p.origin, p.environment,
-      (SELECT verified FROM site_verifications sv WHERE sv.project_id = p.id ORDER BY revision DESC LIMIT 1) AS verified,
+      (SELECT verified FROM site_verifications sv WHERE sv.project_id = p.id AND sv.origin = p.origin ORDER BY revision DESC LIMIT 1) AS verified,
       (SELECT max(created_at) FROM runs r WHERE r.project_id = p.id) AS last_run
     FROM projects p WHERE p.owner_id = $1 ORDER BY p.created_at DESC`, [user.id])).rows;
   const today = (await db().query(`SELECT count(*)::int AS n FROM runs WHERE owner_id = $1 AND day_bucket = (now() AT TIME ZONE 'utc')::date AND counted_against_quota`, [user.id])).rows[0].n as number;

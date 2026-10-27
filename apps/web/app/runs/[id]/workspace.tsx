@@ -158,7 +158,8 @@ export function RunWorkspace({ initial, controllable, replay, signedIn }: { init
         {elapsed && <span className="pill-stat tabular" title="Elapsed time"><Icon name="clock" /><span className="sr-only">Elapsed </span><span suppressHydrationWarning>{elapsed}</span></span>}
         <span className="toolbar-spacer" />
         <span className="conn">
-          {!replay && <StatusBadge value={conn} />}
+          {/* Connection state only matters while the run can still change; a finished run is never "Live". */}
+          {!replay && active && <StatusBadge value={conn} />}
           <span className="tabular" suppressHydrationWarning>Updated {new Date(lastUpdate).toLocaleTimeString()}</span>
         </span>
         <span className="row" style={{ gap: 8 }}>

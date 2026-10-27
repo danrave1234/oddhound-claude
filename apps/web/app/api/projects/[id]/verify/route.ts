@@ -3,7 +3,8 @@ import { currentUser, db, json } from '@/lib/server';
 import { verifyOwnership } from '@core/verification/ownership.ts';
 import { labProfileFromEnv } from '@core/net/ip-policy.ts';
 
-const Body = z.object({ method: z.enum(['dns_txt', 'well_known_file', 'meta_tag']) });
+// `origin` picks one of the project's API origins; without it the site's own origin is checked.
+const Body = z.object({ method: z.enum(['dns_txt', 'well_known_file', 'meta_tag']), origin: z.string().max(300).optional() });
 
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
@@ -13,7 +14,8 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   if (!parsed.success) return json({ error: 'Choose a verification method.' }, 400);
   const sv = (await db().query<{ id: string; origin: string; token: string }>(
     `SELECT sv.id, sv.origin, sv.token FROM site_verifications sv JOIN projects p ON p.id = sv.project_id
-     WHERE sv.project_id = $1 AND p.owner_id = $2 ORDER BY sv.revision DESC LIMIT 1`, [id, user.id])).rows[0];
+     WHERE sv.project_id = $1 AND p.owner_id = $2 AND sv.origin = coalesce($3, p.origin) ORDER BY sv.revision DESC LIMIT 1`,
+    [id, user.id, parsed.data.origin ?? null])).rows[0];
   if (!sv) return json({ error: 'Not found' }, 404);
   const result = await verifyOwnership(sv.origin, sv.token, parsed.data.method, { lab: labProfileFromEnv() });
   await db().query('UPDATE site_verifications SET verified = $2, method = $3, last_reason = $4, last_checked_at = now() WHERE id = $1',
