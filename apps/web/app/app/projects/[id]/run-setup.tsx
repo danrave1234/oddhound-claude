@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Icon } from '@/ui/icons';
+import { DEFAULT_DENIED_PATH_KEYWORDS, DEFAULT_DENIED_OPERATIONS } from '@core/contracts/contract.ts';
 
 const lines = (s: string) => s.split('\n').map((l) => l.trim()).filter(Boolean);
 
@@ -22,6 +23,8 @@ export function RunSetup({ projectId, environment }: { projectId: string; enviro
       allowRegistration: Boolean(f.get('register')), emailDomain: String(f.get('emailDomain') || 'example.test'), secondActor: Boolean(f.get('secondActor')),
       devices: devices.length ? devices : ['desktop'], deniedPathPrefixes: lines(String(f.get('denied') ?? '')).filter((l) => l.startsWith('/')),
       deniedOperations: lines(String(f.get('deniedOps') ?? '')),
+      deniedPathKeywords: String(f.get('keywords') ?? '').split(/[\s,]+/).map((k) => k.trim().toLowerCase()).filter(Boolean),
+      handoff: { enabled: Boolean(f.get('handoff')), startPath: String(f.get('startPath') || '/login') },
       ...(username && password ? { account: { username, password, label: 'Owner test account' } } : {}),
     }) });
     const body = await res.json().catch(() => ({}));
@@ -41,6 +44,11 @@ export function RunSetup({ projectId, environment }: { projectId: string; enviro
         <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}><input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} required />
           <span>I understand this is a <strong>production</strong> site and allow test writes with synthetic accounts and data. Actions the site completes cannot be undone by Oddhound.</span></label>
       )}
+      <div className="field" style={{ gap: 6 }}>
+        <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}><input type="checkbox" name="handoff" />
+          <span><strong>My site needs sign-in: I'll sign in myself first.</strong> The run opens a live view of its browser; you sign in however you normally do (password, Google, 2FA), then hand over and the agent tests the signed-in area. No test account needed. Your sign-in is never shown to the AI model.</span></label>
+        <label className="field" style={{ maxWidth: 320, marginLeft: 24 }}><span>Sign-in page</span><input className="input mono" name="startPath" defaultValue="/login" /></label>
+      </div>
       <label className="field"><span>Goals (one per line)</span><textarea className="textarea" name="goals" required defaultValue={'Create an account and sign in.\nComplete the main workflow.\nTry unexpected inputs and orderings and check the rules hold.'} /></label>
       <label className="field"><span>Rules the site must follow (one per line; findings are judged only against these)</span><textarea className="textarea" name="rules" placeholder="A booking must have between 1 and 8 guests." /></label>
       <fieldset style={{ border: 0, padding: 0, display: 'grid', gap: 8 }}>
@@ -52,12 +60,13 @@ export function RunSetup({ projectId, environment }: { projectId: string; enviro
         <label><input type="checkbox" name="device_mobile" defaultChecked /> <Icon name="mobile" /> Phone 390×844 (emulation)</label>
       </fieldset>
       <details>
-        <summary>Existing test account and denied areas (optional)</summary>
+        <summary>Blocked areas (safe defaults on) and optional test account</summary>
         <div style={{ display: 'grid', gap: 10, marginTop: 10 }}>
           <label className="field"><span>Test account username or email</span><input className="input" name="username" autoComplete="off" /></label>
           <label className="field"><span>Test account password (encrypted; never shown to the model)</span><input className="input" name="password" type="password" autoComplete="new-password" /></label>
+          <label className="field"><span>Never open URLs containing these words (safe defaults)</span><textarea className="textarea mono" name="keywords" defaultValue={DEFAULT_DENIED_PATH_KEYWORDS.join(', ')} /></label>
           <label className="field"><span>Denied path prefixes (one per line)</span><textarea className="textarea" name="denied" placeholder="/admin&#10;/billing" /></label>
-          <label className="field"><span>Denied operations (one per line)</span><textarea className="textarea" name="deniedOps" placeholder="Never send messages to customers." /></label>
+          <label className="field"><span>Denied operations (one per line)</span><textarea className="textarea" name="deniedOps" defaultValue={DEFAULT_DENIED_OPERATIONS.join(String.fromCharCode(10))} /></label>
         </div>
       </details>
       {error && <p role="alert" style={{ color: 'var(--bad)', margin: 0 }}>{error}</p>}

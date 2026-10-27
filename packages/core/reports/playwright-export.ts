@@ -29,9 +29,13 @@ async function submitForm(page: Page, path: string, fields: Record<string, strin
   await page.waitForLoadState('domcontentloaded');
 }
 `;
-  const auth = 'auth' in s && s.auth
-    ? `  const who = identity();\n  await submitForm(page, ${j(s.auth.path)}, ${j(s.auth.fields)}, ${j(s.auth.submit)}, who);\n  await expect(page.getByText(${j(s.auth.successText)})).toBeVisible();\n`
-    : '';
+  const recipe = 'auth' in s ? s.auth : undefined;
+  const handoff = recipe?.kind === 'handoff';
+  const auth = recipe && recipe.kind !== 'handoff'
+    ? `  const who = identity();\n  await submitForm(page, ${j(recipe.path)}, ${j(recipe.fields)}, ${j(recipe.submit)}, who);\n  await expect(page.getByText(${j(recipe.successText)})).toBeVisible();\n`
+    : handoff
+      ? '  // Recorded while signed in as the site owner. Save a signed-in session first:\n  //   npx playwright codegen --save-storage=auth.json <your site>, then run with STORAGE_STATE=auth.json\n  const who = identity();\n'
+      : '';
   let body = '';
   if (s.kind === 'form_rule') {
     body = `${auth}  await submitForm(page, ${j(s.form.path)}, ${j(s.form.fields)}, ${j(s.form.submit)}, { ...${auth ? 'who' : 'identity()'}, marker });
@@ -48,7 +52,7 @@ async function submitForm(page: Page, path: string, fields: Record<string, strin
   await expect(page.locator('body')).toContainText(marker); // positive control: the owner can read it
   const other = await browser.newContext();
   const page2 = await other.newPage();
-  await submitForm(page2, ${j(s.auth.path)}, ${j(s.auth.fields)}, ${j(s.auth.submit)}, identity());
+  ${s.auth.kind === 'handoff' ? '// Sign a second, unrelated account in here before opening the record.' : `await submitForm(page2, ${j(s.auth.path)}, ${j(s.auth.fields)}, ${j(s.auth.submit)}, identity());`}
   await page2.goto(recordUrl);
   // Rule: another account must not see this record.
   await expect(page2.locator('body')).not.toContainText(marker);
@@ -63,7 +67,7 @@ async function submitForm(page: Page, path: string, fields: Record<string, strin
 `;
   }
   const fixture = s.kind === 'cross_account_read' ? '{ page, browser }' : '{ page }';
-  return `${header}
+  return `${header}${handoff ? 'test.use({ storageState: process.env.STORAGE_STATE });\n' : ''}
 test(${j(meta.title)}, async (${fixture}) => {
 ${body}});
 `;

@@ -2,7 +2,7 @@
 import { z } from 'zod';
 import { currentUser, db, json, mayScanVerifiedSites } from '@/lib/server';
 import { admitRun } from '@core/ledger/runs.ts';
-import { RunContractSchema, type RunContract } from '@core/contracts/contract.ts';
+import { RunContractSchema, DEFAULT_DENIED_PATH_KEYWORDS, DEFAULT_DENIED_OPERATIONS, HANDOFF_DENIED_OPERATIONS, type RunContract } from '@core/contracts/contract.ts';
 import { storeCredential } from '@core/ledger/credentials.ts';
 import { enqueueRun } from '@core/queue/queue.ts';
 
@@ -16,7 +16,9 @@ const Body = z.object({
   secondActor: z.boolean().default(false),
   devices: z.array(z.enum(['desktop', 'mobile'])).min(1).max(2),
   deniedPathPrefixes: z.array(z.string().trim().startsWith('/')).max(30).default([]),
-  deniedOperations: z.array(z.string().trim().max(200)).max(20).default([]),
+  deniedPathKeywords: z.array(z.string().trim().toLowerCase().regex(/^[a-z0-9-]{2,40}$/)).max(60).default(DEFAULT_DENIED_PATH_KEYWORDS),
+  deniedOperations: z.array(z.string().trim().max(200)).max(20).default(DEFAULT_DENIED_OPERATIONS),
+  handoff: z.object({ enabled: z.boolean(), startPath: z.string().trim().startsWith('/').max(200).default('/login') }).default({ enabled: false, startPath: '/login' }),
   account: z.object({ username: z.string().min(1).max(200), password: z.string().min(1).max(200), label: z.string().max(80).default('Owner test account') }).optional(),
 });
 
@@ -50,11 +52,13 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     description: project.description || 'No description provided.',
     goals: b.goals,
     rules: b.rules.map((text, i) => ({ id: `R${i + 1}`, text, source: 'owner' })),
-    capabilities: { register: writes && b.allowRegistration, login: true, createRecords: writes, editRecords: writes, cancelRecords: writes, boundaryValues: true, repeatSubmission: writes, unusualOrder: true, crossAccountRead: b.secondActor },
+    capabilities: { register: writes && b.allowRegistration, login: true, createRecords: writes, editRecords: writes, cancelRecords: writes, boundaryValues: true, repeatSubmission: writes, unusualOrder: true, crossAccountRead: b.secondActor && !b.handoff.enabled },
     accounts,
     registration: { allowed: writes && b.allowRegistration, emailDomain: b.emailDomain, maxIdentities: 3 },
     deniedPathPrefixes: b.deniedPathPrefixes,
-    deniedOperations: b.deniedOperations,
+    deniedPathKeywords: b.deniedPathKeywords,
+    deniedOperations: [...b.deniedOperations, ...(b.handoff.enabled ? HANDOFF_DENIED_OPERATIONS : [])].slice(0, 20),
+    handoff: b.handoff,
     devices: b.devices,
     expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
   });

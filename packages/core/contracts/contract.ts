@@ -51,11 +51,51 @@ export const RunContractSchema = z.object({
   accounts: z.array(AccountRefSchema).max(4),
   registration: z.object({ allowed: z.boolean(), emailDomain: z.string().regex(/^[a-z0-9.-]+\.[a-z]{2,}$/), maxIdentities: z.number().int().min(0).max(3) }),
   deniedPathPrefixes: z.array(z.string().startsWith('/')).max(30),
+  // Words that block any URL on the verified site whose path contains them as a segment or a
+  // dash/underscore-separated part (e.g. "domain" blocks /api/vercel/add-domain). Safe defaults below.
+  deniedPathKeywords: z.array(z.string().regex(/^[a-z0-9-]{2,40}$/)).max(60).default([]),
   deniedOperations: z.array(z.string().max(200)).max(20),
+  // Owner sign-in handoff: the owner signs in through a live view first, then the agent takes over
+  // with that session. The session lives only in the worker's memory for this run.
+  handoff: z.object({ enabled: z.boolean(), startPath: z.string().startsWith('/').max(200) }).default({ enabled: false, startPath: '/' }),
   devices: z.array(z.enum(Object.keys(DEVICE_PROFILES) as ['desktop', 'mobile'])).min(1).max(2),
   expiresAt: z.string(),
 });
 export type RunContract = z.infer<typeof RunContractSchema>;
+
+/**
+ * Safe defaults: URL words that usually mean money, irreversible changes, operator areas or ending
+ * the session. Prefilled for every new run and editable by the owner. Path checks cannot see what a
+ * same-URL form post (for example a Next.js server action) does, so denied operations are also stated
+ * to the agent; neither is a guarantee about arbitrary UI actions (MVP §17).
+ */
+export const DEFAULT_DENIED_PATH_KEYWORDS = [
+  'admin', 'checkout', 'pay', 'payment', 'payments', 'billing', 'invoice', 'invoices', 'subscribe', 'subscription', 'subscriptions',
+  'stripe', 'paymongo', 'paypal', 'refund', 'withdraw', 'transfer', 'webhook', 'webhooks', 'cron', 'delete', 'destroy', 'purge',
+  'domain', 'domains', 'redeem', 'logout', 'signout', 'sign-out', 'log-out',
+];
+
+export const DEFAULT_DENIED_OPERATIONS = [
+  'Do not pay, subscribe, or enter payment details.',
+  'Do not delete accounts or data you did not create in this run.',
+  'Do not send messages, invitations or emails to real people.',
+];
+
+export const HANDOFF_DENIED_OPERATIONS = [
+  'You are signed in as the owner\'s account: do not sign out, and do not change its email, password, name or security settings.',
+];
+
+/** True when a URL path is blocked by one of the denied keywords. */
+export function pathHasDeniedKeyword(pathname: string, keywords: readonly string[]): string | null {
+  if (!keywords.length) return null;
+  let decoded = pathname;
+  try { decoded = decodeURIComponent(pathname); } catch { /* keep raw */ }
+  for (const segment of decoded.toLowerCase().split('/').filter(Boolean)) {
+    const parts = new Set([segment, ...segment.split(/[-_.]/).filter(Boolean)]);
+    for (const k of keywords) if (parts.has(k)) return k;
+  }
+  return null;
+}
 
 /** Whether this contract permits state-changing requests at all. */
 export function writesPermitted(c: RunContract): boolean {
@@ -90,7 +130,9 @@ export function demoTargetContract(origin: string, now = new Date()): RunContrac
     accounts: [],
     registration: { allowed: true, emailDomain: 'example.test', maxIdentities: 3 },
     deniedPathPrefixes: ['/__lab'],
+    deniedPathKeywords: [],
     deniedOperations: ['Do not use the lab reset endpoint.'],
+    handoff: { enabled: false, startPath: '/' },
     devices: ['desktop', 'mobile'],
     expiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
   };

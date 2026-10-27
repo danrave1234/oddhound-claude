@@ -13,14 +13,18 @@ import { canonicalJson, sha256 } from '../ledger/runs.ts';
 const Template = z.string().max(200);
 const FieldMap = z.record(z.string().min(1).max(80), Template).refine((m) => Object.keys(m).length > 0 && Object.keys(m).length <= 12, 'between 1 and 12 fields');
 
-export const AuthRecipeSchema = z.object({
+export const FormAuthRecipeSchema = z.object({
   kind: z.enum(['register', 'login']),
   path: z.string().startsWith('/').max(200),
   fields: FieldMap,
   submit: z.string().min(1).max(80),
   successText: z.string().min(1).max(120),
 });
+/** The owner signed in through the live handoff; replays reuse that run's in-memory session. */
+export const HandoffAuthRecipeSchema = z.object({ kind: z.literal('handoff') });
+export const AuthRecipeSchema = z.union([FormAuthRecipeSchema, HandoffAuthRecipeSchema]);
 export type AuthRecipe = z.infer<typeof AuthRecipeSchema>;
+export type FormAuthRecipe = z.infer<typeof FormAuthRecipeSchema>;
 
 const FormSchema = z.object({ path: z.string().startsWith('/').max(200), fields: FieldMap, submit: z.string().min(1).max(80) });
 
@@ -87,6 +91,8 @@ export type ReplayEnv = {
   /** Signed-in sessions per replay role, so a verification batch registers at most two accounts. */
   sessions: Map<string, StorageState>;
   onIdentityCreated?: (role: string) => void;
+  /** The owner's signed-in session from this run's handoff (memory only; absent in later runs). */
+  handoffState?: StorageState;
 };
 
 export function newReplaySessions(): Map<string, StorageState> { return new Map(); }
@@ -126,7 +132,7 @@ async function fillAndSubmit(page: Page, origin: string, form: { path: string; f
   await page.waitForLoadState('domcontentloaded');
 }
 
-async function authenticate(page: Page, origin: string, auth: AuthRecipe, ident: { name: string; email: string; password: string }): Promise<void> {
+async function authenticate(page: Page, origin: string, auth: FormAuthRecipe, ident: { name: string; email: string; password: string }): Promise<void> {
   // Login recipes need an account first: register with the same identity is not known, so a login
   // recipe can only be replayed when the scenario was recorded with a supplied account (blocked otherwise).
   if (auth.kind === 'login') throw new ReplayBlocked('login recipe requires a supplied account; replay uses fresh registrations');
@@ -142,6 +148,14 @@ export async function replayScenario(s: Scenario, env: ReplayEnv): Promise<Repla
   const contexts: BrowserContext[] = [];
   /** Open a page for a replay role, signed in through the scenario's own auth recipe (cached per role). */
   const open = async (device: 'desktop' | 'mobile', role?: string, auth?: AuthRecipe) => {
+    if (auth?.kind === 'handoff') {
+      // Only the owner's own account exists; it is never registered or signed in by the verifier.
+      if (role !== 'A') throw new ReplayBlocked('a second account is not available: this run used the owner\'s own sign-in');
+      if (!env.handoffState) throw new ReplayBlocked('this check needs the owner to sign in again (the earlier session is not kept after its run)');
+      const ctx = await env.newContext(device, env.handoffState);
+      contexts.push(ctx);
+      return ctx.newPage();
+    }
     const key = role && auth ? `${role}:${sha256(canonicalJson(auth))}` : undefined;
     const cached = key ? env.sessions.get(key) : undefined;
     const ctx = await env.newContext(device, cached);

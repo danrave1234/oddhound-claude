@@ -4,12 +4,18 @@
 // requests only to verified origins and only when the contract permits writes, never touch denied
 // paths, and treat every other origin as a public resource dependency.
 //
+// Owner sign-in handoff: while the OWNER drives the browser through the live view (the agent cannot
+// act then), sign-in may need other origins (an identity provider, a bot-check service). During that
+// phase only, top-level navigation and form posts to other public origins are allowed. Denied paths on
+// the verified site stay blocked, and the egress proxy still refuses private and internal addresses.
+// The flag is switched off before the agent's first action.
+//
 // Known limit (documented in the spec): route handlers are not re-invoked for redirect hops, so after
 // every action the agent also checks that the main frame is still on the verified origin.
 
 import type { BrowserContext, Route, Request } from 'playwright';
 import type { RunContract } from '../contracts/contract.ts';
-import { writesPermitted } from '../contracts/contract.ts';
+import { pathHasDeniedKeyword, writesPermitted } from '../contracts/contract.ts';
 
 export type ScopeDecision = { allowed: boolean; reason: string; method: string; url: string; resourceType: string };
 
@@ -18,6 +24,9 @@ export type ScopePolicy = {
   apiOrigins: Set<string>;
   writes: boolean;
   deniedPathPrefixes: string[];
+  deniedPathKeywords: string[];
+  /** True only while the owner drives the browser during the sign-in handoff. */
+  handoffActive: boolean;
 };
 
 export function policyFromContract(c: RunContract): ScopePolicy {
@@ -26,6 +35,8 @@ export function policyFromContract(c: RunContract): ScopePolicy {
     apiOrigins: new Set(c.target.apiOrigins.map((a) => new URL(a.origin).origin)),
     writes: writesPermitted(c),
     deniedPathPrefixes: c.deniedPathPrefixes,
+    deniedPathKeywords: c.deniedPathKeywords,
+    handoffActive: false,
   };
 }
 
@@ -43,6 +54,13 @@ export function decide(policy: ScopePolicy, req: { url: string; method: string; 
 
   if ((isPrimary || isApi) && policy.deniedPathPrefixes.some((p) => url.pathname.startsWith(p))) {
     return { ...base, allowed: false, reason: 'denied_path' };
+  }
+  if ((isPrimary || isApi) && pathHasDeniedKeyword(url.pathname, policy.deniedPathKeywords)) {
+    return { ...base, allowed: false, reason: 'denied_path_keyword' };
+  }
+  if (policy.handoffActive) {
+    // Owner-driven sign-in: any public http(s) origin, reads and writes, top-level or framed.
+    return { ...base, allowed: true, reason: isPrimary ? 'verified_origin' : 'owner_handoff' };
   }
   if (req.isNavigation) {
     if (req.isMainFrame && !isPrimary) return { ...base, allowed: false, reason: 'navigation_outside_verified_origin' };
@@ -68,7 +86,7 @@ export async function attachScope(context: BrowserContext, policy: ScopePolicy, 
       url: request.url(), method: request.method(), isNavigation: request.isNavigationRequest(),
       isMainFrame, resourceType: request.resourceType(),
     });
-    if (!d.allowed || d.reason !== 'verified_origin') onDecision(d);
+    if (!d.allowed || (d.reason !== 'verified_origin' && d.reason !== 'owner_handoff')) onDecision(d);
     if (d.allowed) await route.continue();
     else await route.abort('blockedbyclient');
   });

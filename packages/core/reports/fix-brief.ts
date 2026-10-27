@@ -25,7 +25,8 @@ export function fenceUntrusted(text: string): string {
 function reproduction(s: Scenario): string[] {
   const steps: string[] = [];
   const auth = 'auth' in s ? s.auth : undefined;
-  if (auth) steps.push(`Create a new account at \`${auth.path}\` (fields: ${Object.keys(auth.fields).join(', ')}) and confirm "${auth.successText}" is shown.`);
+  if (auth?.kind === 'handoff') steps.push('Sign in to the site as a normal user (Oddhound used the owner\'s own sign-in for this check).');
+  else if (auth) steps.push(`Create a new account at \`${auth.path}\` (fields: ${Object.keys(auth.fields).join(', ')}) and confirm "${auth.successText}" is shown.`);
   if (s.kind === 'form_rule') {
     steps.push(`Open \`${s.form.path}\` on a ${s.device} screen.`);
     steps.push(`Fill: ${Object.entries(s.form.fields).map(([k, v]) => `${k} = ${JSON.stringify(v)}`).join('; ')}.`);

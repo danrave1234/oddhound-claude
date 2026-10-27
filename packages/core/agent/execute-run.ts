@@ -6,7 +6,7 @@
 
 import type { Db } from '../db/pool.ts';
 import { LIMITS } from '../contracts/limits.ts';
-import { RunContractSchema, type RunContract } from '../contracts/contract.ts';
+import { RunContractSchema, pathHasDeniedKeyword, type RunContract } from '../contracts/contract.ts';
 import type { RunStatus } from '../contracts/status.ts';
 import { appendEvent, assertLease, claimRun, FencedError, setRunStatus, refundIfNeverStarted } from '../ledger/runs.ts';
 import { reserveSpend, settleSpend, releaseSpend, markSpendUnknown } from '../ledger/spend.ts';
@@ -23,6 +23,7 @@ import { priceFor, inputTokenBound, reservationMicros, actualMicros } from '../p
 import { RunSession } from './session.ts';
 import { TOOL_DEFINITIONS, ToolArgs, BROWSER_TOOLS, boundaryValues, type ToolName } from './tools.ts';
 import { systemPrompt } from './prompt.ts';
+import { runHandoff, HandoffEnded } from './handoff.ts';
 import { controlFor, newReplaySessions, replayScenario, scenarioDefect, scenarioHash, type AuthRecipe, type ReplayEnv, type Scenario } from '../verifier/scenario.ts';
 
 export type ExecuteDeps = {
@@ -47,6 +48,7 @@ type RunRow = {
 };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+type StorageState = Awaited<ReturnType<RunSession['storageState']>>;
 
 export async function executeRun(deps: ExecuteDeps, runId: string): Promise<RunStatus | null> {
   const { db } = deps;
@@ -130,15 +132,25 @@ export async function executeRun(deps: ExecuteDeps, runId: string): Promise<RunS
     const onScope = (d: ScopeDecision) => { if (!d.allowed) void ev('scope.denied', { url: redactUrl(d.url), method: d.method, reason: d.reason }); };
     session = new RunSession(browser.browser, policyFromContract(contract), onScope);
 
+    // 3b. Owner sign-in handoff: the owner signs in through the live view; the model sees none of it.
+    let handoffState: StorageState | undefined;
+    if (contract.handoff.enabled) {
+      await setRunStatus(db, runId, generation, 'waiting_for_input');
+      await ev('run.status', { status: 'waiting_for_input', reason: 'owner_sign_in' });
+      handoffState = await runHandoff({ db, runId, generation, session, startPath: contract.handoff.startPath, ev, signal: abort.signal });
+      await setRunStatus(db, runId, generation, 'running');
+      await ev('run.status', { status: 'running' });
+    }
+
     // 4. Exploration with the Meta model.
     const candidates: Candidate[] = [];
-    const recorded: Recorded = { auth: null, labelsByPath: new Map(), controlsByPath: new Map() };
+    const recorded: Recorded = { auth: handoffState ? { kind: 'handoff' } : null, labelsByPath: new Map(), controlsByPath: new Map() };
     const loop = await agentLoop({ deps, runId, generation, contract, run, provider, price, session, ev, abort, candidates, recorded });
     if (loop.stopReason) stopReason = loop.stopReason;
 
     // 5. Independent verification of every candidate (fresh contexts, fresh identities).
     await ev('run.phase', { phase: 'verifying', candidates: candidates.length });
-    await verifyCandidates({ db, runId, generation, run, contract, candidates, browser, ev });
+    await verifyCandidates({ db, runId, generation, run, contract, candidates, browser, ev, handoffState });
 
     // 6. Deterministic configuration observations from captured responses (no model involvement).
     await recordConfigurationObservations(db, run, session, contract, ev);
@@ -146,7 +158,9 @@ export async function executeRun(deps: ExecuteDeps, runId: string): Promise<RunS
     await finish(loop.stopReason?.startsWith('budget_') || loop.stopReason === 'limit_turns' || loop.stopReason === 'limit_actions' ? 'stopped' : 'completed', stopReason);
     return await done();
   } catch (e) {
-    if (e instanceof FencedError || abort.signal.aborted) {
+    if (e instanceof HandoffEnded) {
+      await finish('stopped', e.reason);
+    } else if (e instanceof FencedError || abort.signal.aborted) {
       const r = (await db.query<{ stop_requested_at: Date | null }>('SELECT stop_requested_at FROM runs WHERE id = $1', [runId])).rows[0];
       await finish('stopped', r?.stop_requested_at ? 'user_stop' : e instanceof FencedError ? e.reason : 'expired_or_capped');
     } else {
@@ -319,6 +333,8 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
         const target = new URL(args.path, session.origin);
         if (target.origin !== session.origin) return { text: 'Navigation outside the verified site is not allowed.' };
         if (contract.deniedPathPrefixes.some((p) => target.pathname.startsWith(p))) return { text: 'That path is denied by the run contract.' };
+        const word = pathHasDeniedKeyword(target.pathname, contract.deniedPathKeywords);
+        if (word) return { text: `That path is denied by the run contract (blocked word "${word}").` };
         return { text: await runBrowserAction(name, args, `Opened ${target.pathname}`, async () => { await (await session.page()).goto(target.toString(), { waitUntil: 'domcontentloaded' }); }) };
       }
       case 'click': {
@@ -570,14 +586,14 @@ export function scenarioProblems(c: Candidate, recorded: Recorded): string[] {
   }
   if (s.kind === 'cross_account_read') { checkFields(s.create.path, s.create.fields); checkControl(s.create.path, s.create.submit); }
   if (s.kind === 'mobile_reachability') { if (!recorded.controlsByPath.has(s.path)) problems.push(`Path ${s.path} was never observed in this run.`); else checkControl(s.path, s.control); }
-  if ('auth' in s && s.auth && !recorded.auth) checkFields(s.auth.path, s.auth.fields);
+  if ('auth' in s && s.auth && s.auth.kind !== 'handoff' && !recorded.auth) checkFields(s.auth.path, s.auth.fields);
   return problems;
 }
 
 // ---------------------------------------------------------------------------------------------
 // Verification
 
-function replayEnvFor(db: Db, runId: string, browser: ProvisionedBrowser, contract: RunContract, origin: string, ev: (t: string, p?: Record<string, unknown>) => Promise<number>): ReplayEnv {
+function replayEnvFor(db: Db, runId: string, browser: ProvisionedBrowser, contract: RunContract, origin: string, ev: (t: string, p?: Record<string, unknown>) => Promise<number>, handoffState?: StorageState): ReplayEnv {
   let n = 0;
   const policy = { ...policyFromContract(contract), primaryOrigin: new URL(origin).origin };
   return {
@@ -590,6 +606,7 @@ function replayEnvFor(db: Db, runId: string, browser: ProvisionedBrowser, contra
     },
     identity: () => syntheticIdentity(runId, 100 + ++n, contract.registration.emailDomain),
     onIdentityCreated: (role) => { void ev('identity.created', { role, phase: 'verification' }); },
+    handoffState,
   };
 }
 
@@ -607,9 +624,9 @@ async function recordExecution(db: Db, scenarioId: string, runId: string, kind: 
     [scenarioId, runId, kind, hash, outcome, JSON.stringify(observed), evidence]);
 }
 
-async function verifyCandidates(v: { db: Db; runId: string; generation: number; run: RunRow; contract: RunContract; candidates: Candidate[]; browser: ProvisionedBrowser; ev: (t: string, p?: Record<string, unknown>) => Promise<number> }) {
+async function verifyCandidates(v: { db: Db; runId: string; generation: number; run: RunRow; contract: RunContract; candidates: Candidate[]; browser: ProvisionedBrowser; ev: (t: string, p?: Record<string, unknown>) => Promise<number>; handoffState?: StorageState }) {
   const { db, runId, run, contract, candidates, browser, ev } = v;
-  const env = replayEnvFor(db, runId, browser, contract, contract.target.origin, ev);
+  const env = replayEnvFor(db, runId, browser, contract, contract.target.origin, ev, v.handoffState);
   const seen = new Set<string>();
   for (const c of candidates) {
     const hash = scenarioHash(c.scenario);

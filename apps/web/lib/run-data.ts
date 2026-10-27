@@ -8,7 +8,7 @@ export type RunSnapshot = Awaited<ReturnType<typeof loadRunSnapshot>>;
 export async function loadRunSnapshot(runId: string) {
   const pool = db();
   const run = (await pool.query(`SELECT id, project_id, mode, origin, environment, test_mode, status, stop_reason, browser_state, browser_ref, sandbox_verdict,
-      provider, model, queued_at, started_at, finished_at, expires_at, parent_run_id, contract->'goals' AS goals, contract->'rules' AS rules, contract->'devices' AS devices
+      provider, model, queued_at, started_at, finished_at, expires_at, parent_run_id, contract->'goals' AS goals, contract->'rules' AS rules, contract->'devices' AS devices, COALESCE((contract->'handoff'->>'enabled')::boolean, false) AS handoff_enabled
     FROM runs WHERE id = $1`, [runId])).rows[0];
   if (!run) return null;
   const [workflows, states, transitions, findings, events, actions, shot, spend, children] = await Promise.all([

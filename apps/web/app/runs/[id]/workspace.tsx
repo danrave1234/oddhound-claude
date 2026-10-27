@@ -47,6 +47,11 @@ function describe(e: Snapshot['events'][number]): string | null {
     case 'budget.denied': return `Budget limit reached (${String(p.reason).replace(/_/g, ' ')}); no further model calls`;
     case 'retest.finished': return `Retest “${p.title}”: original check ${p.outcome}, control ${p.control} → ${p.lifecycle}`;
     case 'run.summary': return `Agent summary: ${p.summary}`;
+    case 'handoff.started': return `Waiting for the owner to sign in through the live view (starts at ${p.startPath}, up to ${p.limitMinutes} minutes)`;
+    case 'handoff.input': return p.type === 'type' ? `Owner typed ${p.characters} character(s)` : p.type === 'navigate' ? `Owner opened ${p.path}` : `Owner ${p.type === 'key' ? `pressed ${p.key}` : p.type === 'click' ? 'clicked' : p.type}`;
+    case 'handoff.completed': return `Owner handed over at ${p.landedPath}; the agent continues with that session${(p.otherOriginsContacted ?? []).length ? ` (sign-in also contacted ${p.otherOriginsContacted.join(', ')})` : ''}`;
+    case 'handoff.cancelled': return 'Owner cancelled the sign-in; run stopped';
+    case 'handoff.timed_out': return 'Sign-in time limit reached; run stopped';
     case 'run.phase': return `Phase: ${p.phase}`;
     case 'run.error': return `Error: ${p.message}`;
     case 'model.truncated': return 'Model output hit the token limit';
@@ -164,6 +169,7 @@ export function RunWorkspace({ initial, controllable, replay, signedIn }: { init
           </div>
 
           <div style={{ padding: 16 }}>
+            {controllable && run.status === 'waiting_for_input' && run.handoff_enabled && <HandoffPanel runId={runId} onStop={stop} />}
             {run.mode === 'retest' && (
               <div className="card" style={{ marginBottom: 14 }}>
                 <div style={{ padding: '10px 12px' }} className="section-title">Retest results — saved assertions replayed unchanged</div>
@@ -299,5 +305,83 @@ function FindingInspector({ finding: f, controllable, onRetest, runActive, runMo
         </section>
       )}
     </article>
+  );
+}
+
+/** Live view of the run's browser while the owner signs in. Clicks and keys go to that browser. */
+function HandoffPanel({ runId, onStop }: { runId: string; onStop: () => void }) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [path, setPath] = useState('');
+  const [msg, setMsg] = useState<string | null>(null);
+  const [handing, setHanding] = useState(false);
+  const buffer = useRef('');
+  const flushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+
+  const send = useCallback(async (input: Record<string, unknown>) => {
+    const r = await fetch(`/api/runs/${runId}/handoff`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) });
+    if (!r.ok) setMsg((await r.json().catch(() => ({}))).error ?? 'Input not accepted.');
+  }, [runId]);
+  const flush = useCallback(() => {
+    if (flushTimer.current) { clearTimeout(flushTimer.current); flushTimer.current = null; }
+    const text = buffer.current; buffer.current = '';
+    if (text) void send({ type: 'type', text });
+  }, [send]);
+
+  useEffect(() => {
+    let alive = true; let url: string | null = null;
+    const tick = async () => {
+      const r = await fetch(`/api/runs/${runId}/live`, { cache: 'no-store' }).catch(() => null);
+      if (r?.ok) {
+        const next = URL.createObjectURL(await r.blob());
+        if (!alive) { URL.revokeObjectURL(next); return; }
+        setSrc(next); if (url) URL.revokeObjectURL(url); url = next;
+        setPath(decodeURIComponent(r.headers.get('x-frame-path') ?? ''));
+      }
+    };
+    void tick();
+    const t = setInterval(tick, 700);
+    return () => { alive = false; clearInterval(t); if (url) URL.revokeObjectURL(url); };
+  }, [runId]);
+
+  const SPECIAL: Record<string, string> = { Enter: 'Enter', Tab: 'Tab', Backspace: 'Backspace', Delete: 'Delete', Escape: 'Escape', ArrowUp: 'ArrowUp', ArrowDown: 'ArrowDown', ArrowLeft: 'ArrowLeft', ArrowRight: 'ArrowRight', Home: 'Home', End: 'End' };
+  function onKey(e: React.KeyboardEvent) {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const special = e.key === 'Tab' && e.shiftKey ? 'Shift+Tab' : SPECIAL[e.key];
+    if (special) { e.preventDefault(); flush(); void send({ type: 'key', key: special }); return; }
+    if (e.key.length === 1) {
+      e.preventDefault();
+      buffer.current += e.key;
+      if (!flushTimer.current) flushTimer.current = setTimeout(flush, 200);
+    }
+  }
+  function onClick(e: React.MouseEvent<HTMLImageElement>) {
+    const img = imgRef.current; if (!img) return;
+    flush();
+    const rect = img.getBoundingClientRect();
+    void send({ type: 'click', x: Math.round((e.clientX - rect.left) * (img.naturalWidth / rect.width)), y: Math.round((e.clientY - rect.top) * (img.naturalHeight / rect.height)) });
+  }
+  async function done() { flush(); setHanding(true); await send({ type: 'done' }); }
+
+  return (
+    <div className="card" style={{ padding: 12, marginBottom: 14, display: 'grid', gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <strong>Sign in, then hand over</strong>
+        <span className="muted mono" style={{ fontSize: 12 }}>{path}</span>
+        <span style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+          <button className="btn" onClick={() => { flush(); void send({ type: 'back' }); }}>Back</button>
+          <button className="btn btn-primary" onClick={done} disabled={handing}><Icon name="play" /> {handing ? 'Handing over…' : "I’m signed in — start testing"}</button>
+          <button className="btn btn-danger" onClick={onStop}>Cancel</button>
+        </span>
+      </div>
+      <p className="muted" style={{ margin: 0 }}>This is the run's own fresh browser. Click into the picture, then type. Sign in the way you normally do. What you type goes to the site through Oddhound and is not saved or shown to the AI model. The agent starts only after you hand over.</p>
+      <div tabIndex={0} onKeyDown={onKey} onPaste={(e) => { const t = e.clipboardData.getData('text'); if (t) { e.preventDefault(); flush(); void send({ type: 'type', text: t.slice(0, 500) }); } }}
+        onWheel={(e) => { void send({ type: 'scroll', dy: Math.max(-1500, Math.min(1500, Math.round(e.deltaY))) }); }}
+        aria-label="Live view of the run's browser. Click to focus, then type." style={{ outline: '2px solid var(--separator)', borderRadius: 8, overflow: 'hidden', cursor: 'pointer' }}>
+        {src ? <img ref={imgRef} src={src} alt="Live view of the run's browser" onClick={onClick} draggable={false} style={{ display: 'block', width: '100%', height: 'auto' }} />
+          : <p className="muted" style={{ padding: 24, margin: 0 }}>Starting the browser…</p>}
+      </div>
+      {msg && <p role="alert" style={{ margin: 0, color: 'var(--warn)' }}>{msg}</p>}
+    </div>
   );
 }

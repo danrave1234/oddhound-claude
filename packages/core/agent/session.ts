@@ -36,6 +36,16 @@ export class RunSession {
   get device() { return this.#device; }
   get origin() { return this.#policy.primaryOrigin; }
 
+  /** Owner sign-in handoff: relaxes scope for owner-driven sign-in only (see scope.ts). */
+  setHandoff(active: boolean) { this.#policy.handoffActive = active; }
+  get handoffActive() { return this.#policy.handoffActive; }
+
+  /** Cookies and storage of the current actor/device context (kept in memory by the caller only). */
+  async storageState() {
+    const entry = this.#contexts.get(`${this.#actor}:${this.#device}`);
+    return entry ? entry.ctx.storageState() : undefined;
+  }
+
   async page(): Promise<Page> {
     const key = `${this.#actor}:${this.#device}`;
     let entry = this.#contexts.get(key);
