@@ -20,7 +20,7 @@ Oddhound is an active exploratory-testing agent for web apps, driven by **Meta M
   - 13/13 HTTP tenant-isolation checks;
   - 10/10 in-container network checks;
   - 9/9 live provider smoke checks.
-- **Not deployed yet**, and not yet run on real verified sites (see the status doc).
+- **First real verified site:** `www.danravekeh.com` was verified with a `/.well-known` file and scanned by Muse Spark in observation-only mode. A second real site and the public deployment are still open (see the status doc).
 
 ## Layout
 
