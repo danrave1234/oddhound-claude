@@ -1,14 +1,7 @@
-# oddhound-browser — the secret-free browser app. NOT YET DEPLOYED (no Fly token was available).
-# Machines are created per run by the worker through the Machines API (packages/core/browser/fly-runtime.ts),
-# from the image built with apps/browser/Dockerfile. This app has:
+# oddhound-claude-browser: the secret-free per-run browser app. It is never `fly deploy`ed as a
+# service: the worker creates one fresh Machine per run from the pinned image digest through the
+# Machines API and destroys it afterwards.
 #   * NO secrets: never run `fly secrets set` here (Fly gives app secrets to every Machine in the app);
 #   * NO [[services]] and no public IP: the worker reaches each Machine only over the private 6PN network.
-app = "oddhound-browser"
+app = "oddhound-claude-browser"
 primary_region = "sin"
-
-[build]
-  dockerfile = "../../apps/browser/Dockerfile"
-
-[[vm]]
-  size = "shared-cpu-2x"
-  memory = "2gb"

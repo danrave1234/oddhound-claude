@@ -1,0 +1,11 @@
+node_modules
+**/node_modules
+.tools
+.data
+**/.next
+test-results
+tests
+docs
+.git
+.env
+.env.*

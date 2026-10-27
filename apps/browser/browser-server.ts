@@ -17,7 +17,9 @@ const server = await chromium.launchServer({
   channel: 'chromium',
   headless: true,
   chromiumSandbox: true,
-  host: '0.0.0.0', // on Fly: the 6PN address; the app has no public service
+  // Fly's private 6PN network is IPv6 ('::' also accepts IPv4 in the local Docker lab). The app has no
+  // public service or IP; the random per-run path is required to connect.
+  host: '::',
   port: 3000,
   wsPath,
   proxy: { server: 'http://127.0.0.1:3128', bypass: '<-loopback>' },

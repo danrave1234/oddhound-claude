@@ -11,13 +11,16 @@ COPY apps/browser/ apps/browser/
 COPY packages/core/package.json packages/core/
 RUN pnpm install --frozen-lockfile
 COPY . .
-RUN cd apps/web && node scripts/next-with-env.mjs build
+# Build-stage placeholders only (Next imports server modules while collecting page data). They are
+# not real credentials, nothing connects with them, and the runtime stage below does not inherit them.
+RUN cd apps/web && DATABASE_URL=postgres://build:build@127.0.0.1:1/build BETTER_AUTH_SECRET=build-time-placeholder-not-a-secret-000000 \
+    NEXT_TELEMETRY_DISABLED=1 node scripts/next-with-env.mjs build
 
 FROM node:26-bookworm-slim
-WORKDIR /app
-ENV NODE_ENV=production
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
 # The worker only connects to remote browsers (chromium.connect); it needs no local browser.
 COPY --from=build /app /app
+WORKDIR /app/apps/web
 USER node
 EXPOSE 8080
-CMD ["node", "apps/web/scripts/next-with-env.mjs", "start", "--port", "8080", "--hostname", "0.0.0.0"]
+CMD ["node", "scripts/next-with-env.mjs", "start", "--port", "8080", "--hostname", "0.0.0.0"]

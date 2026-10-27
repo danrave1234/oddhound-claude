@@ -1,25 +1,26 @@
-# oddhound-web — Next.js UI/API plus the worker process group. Holds ALL platform secrets
-# (DATABASE_URL, META_API_KEY, BETTER_AUTH_SECRET, GITHUB_CLIENT_*, FLY_API_TOKEN, CONTEXT7_API_KEY).
-# NOT YET DEPLOYED (no Fly token was available). Must be in the same Fly organisation as
-# oddhound-browser so the worker can reach per-run browser Machines over 6PN.
-app = "oddhound-web"
+# oddhound-claude-web: Next.js UI/API (process "web") and the run worker (process "worker"), one image.
+# Holds the platform secrets (set with `fly secrets`, never in this file): DATABASE_URL, META_API_KEY,
+# BETTER_AUTH_SECRET, ODDHOUND_CREDENTIAL_KEY, GITHUB_CLIENT_ID/SECRET, FLY_API_TOKEN (scoped to the
+# browser app only), ODDHOUND_FIXTURE_RESET_TOKEN. Same Fly organisation as the browser app, so the
+# worker reaches each per-run browser Machine over the private 6PN network.
+app = "oddhound-claude-web"
 primary_region = "sin"
 
-[build]
-  dockerfile = "../../apps/web/Dockerfile"
-
 [env]
-  NODE_ENV = "production"
   BROWSER_RUNTIME = "fly"
-  FLY_BROWSER_APP = "oddhound-browser"
-  META_BASE_URL = "https://api.meta.ai/v1"
-  META_MODEL = "muse-spark-1.3"
+  FLY_BROWSER_APP = "oddhound-claude-browser"
+  FLY_REGION = "sin"
+  ARTIFACT_STORE = "db"
+  BETTER_AUTH_URL = "https://oddhound-claude-web.fly.dev"
   META_REASONING_EFFORT = "low"
-  ODDHOUND_LAB_MODE = "0"
+  DEMO_TARGET_ORIGIN = "https://oddhound-claude-demo.fly.dev"
+  DEMO_TARGET_RESET_URL = "https://oddhound-claude-demo.fly.dev/__lab/reset"
+  DEMO_TARGET_FIXED_ORIGIN = "https://oddhound-claude-demo-fixed.fly.dev"
+  DEMO_TARGET_FIXED_RESET_URL = "https://oddhound-claude-demo-fixed.fly.dev/__lab/reset"
 
 [processes]
-  web = "node apps/web/scripts/next-with-env.mjs start --port 8080 --hostname 0.0.0.0"
-  worker = "node apps/worker/main.ts"
+  web = "node scripts/next-with-env.mjs start --port 8080 --hostname 0.0.0.0"
+  worker = "node /app/apps/worker/main.ts"
 
 [http_service]
   internal_port = 8080
@@ -31,9 +32,4 @@ primary_region = "sin"
 [[vm]]
   size = "shared-cpu-1x"
   memory = "1gb"
-  processes = ["web"]
-
-[[vm]]
-  size = "shared-cpu-1x"
-  memory = "1gb"
-  processes = ["worker"]
+  processes = ["web", "worker"]

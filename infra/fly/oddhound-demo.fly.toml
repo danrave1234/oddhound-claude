@@ -1,0 +1,20 @@
+# Demo target (Harbor Table, synthetic data, labelled defects). Deployed twice from the same image:
+#   oddhound-claude-demo        (vulnerable build)  fly deploy -c infra/fly/oddhound-demo.fly.toml
+#   oddhound-claude-demo-fixed  (corrected build)   same file with -a oddhound-claude-demo-fixed -e FIXTURE_MODE=fixed
+# Secret: ODDHOUND_FIXTURE_RESET_TOKEN (shared with the web app so runs can reset the shared demo).
+app = "oddhound-claude-demo"
+primary_region = "sin"
+
+[env]
+  FIXTURE_PORT = "8080"
+  FIXTURE_HOST = "0.0.0.0"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

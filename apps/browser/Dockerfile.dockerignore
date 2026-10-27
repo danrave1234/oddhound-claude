@@ -1,0 +1,9 @@
+node_modules
+**/node_modules
+.tools
+.data
+.next
+apps/web
+test-results
+.env
+.env.*
