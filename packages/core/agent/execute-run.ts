@@ -467,7 +467,20 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
       if (!r.ok) { await ev('budget.denied', { reason: r.reason, attemptedMicros: reserve }); return { stopReason: `budget_${r.reason}` }; }
       let result;
       try {
-        result = await provider.chat({ messages, tools: TOOL_DEFINITIONS, maxOutputTokens: LIMITS.maxOutputTokens, temperature: 0.2, signal: abort.signal });
+        // Meta intermittently answers `model_not_found` (HTTP 404, not billed) from some cloud networks
+        // while the same model works moments later. Retry only that answer, a bounded number of times,
+        // and log every attempt (spec: retries are explicit, never hidden).
+        for (let attempt = 1; ; attempt++) {
+          try {
+            result = await provider.chat({ messages, tools: TOOL_DEFINITIONS, maxOutputTokens: LIMITS.maxOutputTokens, temperature: 0.2, signal: abort.signal });
+            break;
+          } catch (e) {
+            const transient = e instanceof ProviderError && e.status === 404 && !e.maybeBilled && /model_not_found/.test(e.message);
+            if (!transient || attempt >= 8 || abort.signal.aborted) throw e;
+            await ev('provider.retry', { provider: provider.id, attempt, reason: 'model_not_found', billed: false });
+            await sleep(Math.min(4_000, 600 * attempt));
+          }
+        }
       } catch (e) {
         if (e instanceof ProviderError && e.maybeBilled) await markSpendUnknown(db, requestKey); else await releaseSpend(db, requestKey);
         if (abort.signal.aborted) throw new FencedError('stop_or_expiry_during_inference');

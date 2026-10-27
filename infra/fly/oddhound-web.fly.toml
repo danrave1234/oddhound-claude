@@ -9,7 +9,7 @@ primary_region = "iad"
 [env]
   BROWSER_RUNTIME = "fly"
   FLY_BROWSER_APP = "oddhound-claude-browser"
-  FLY_REGION = "iad"
+  FLY_REGION = "ord"
   FLY_BROWSER_IMAGE = "registry.fly.io/oddhound-claude-browser@sha256:3f15a0b6ecff876c28c05857b6e09d4566b14dc9417e6e8563b9bf08ad3fd717"
   ODDHOUND_ADMIN_EMAILS = "danravekeh123@gmail.com"
   ARTIFACT_STORE = "db"
