@@ -46,7 +46,7 @@ export function VerifyPanel({ projectId, origin, token, verified, lastReason, la
     <div style={{ display: 'grid', gap: 16 }}>
       <div className="row" style={{ gap: 8 }}>
         {verified ? <span className="badge badge-ok"><Icon name="check" />Verified</span> : <span className="badge badge-warn"><Icon name="alert" />Not verified</span>}
-        {lastChecked && <span className="muted" style={{ fontSize: 12.5 }}>Last checked {new Date(lastChecked).toLocaleString()} · re-checked before every run</span>}
+        {lastChecked && <span className="muted" style={{ fontSize: 12.5 }}>Last checked {new Date(lastChecked).toLocaleString()}. Checked again before every run.</span>}
       </div>
       <div className="segmented" role="group" aria-label="Verification method" style={{ justifySelf: 'start' }}>
         <button type="button" aria-pressed={method === 'well_known_file'} onClick={() => setMethod('well_known_file')}><Icon name="report" /> File</button>

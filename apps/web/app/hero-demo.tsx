@@ -38,7 +38,7 @@ export function HeroDemo() {
         <div className="d-finding">
           <div className="d-finding-top"><span className="badge badge-bad"><Icon name="bug" />Verified issue</span><span className="d-replays"><i /><i /> 2/2 replays</span></div>
           <strong>A booking with a party size of 0 is accepted</strong>
-          <span className="d-rule">Breaks rule R1 · party size must be 1–8</span>
+          <span className="d-rule">Breaks rule R1: party size must be 1 to 8</span>
         </div>
 
         <svg className="d-cursor" width="22" height="22" viewBox="0 0 16 16"><path d="M3 1.8l10 4.6-4.3 1.4-1.5 4.4z" fill="#1c1b19" stroke="#fff" strokeWidth="1.1" strokeLinejoin="round" /></svg>

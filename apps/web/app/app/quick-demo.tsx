@@ -21,7 +21,6 @@ export function QuickDemoTile({ disabledReason }: { disabledReason: string | nul
       <span className="tile"><Icon name="play" /></span>
       <span className="qt-body"><strong>{busy ? 'Starting a fresh browser…' : 'Try the demo target'}</strong>
         <span role="status" style={error ? { color: 'var(--bad)' } : undefined}>{note ?? 'Oddhound’s own app with labelled defects'}</span></span>
-      {!disabledReason && <span className="arrow-nudge"><Icon name="arrow" /></span>}
     </button>
   );
 }

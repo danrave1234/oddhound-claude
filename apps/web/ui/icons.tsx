@@ -73,17 +73,18 @@ export function Icon({ name, size = 16, label }: { name: IconName; size?: 16 | 2
 
 /* ── Brand ───────────────────────────────────────────────────────────────────── */
 // Brand colours are fixed (not themed) so the mark reads the same everywhere.
-const RUST = '#b5431c', RUST_DEEP = '#7a2a0f', CREAM = '#fff7f0', INK = '#2b1408';
+// Field palette: forest tile, cream hound with a brown ear, blaze-orange collar and scent.
+const FOREST = '#1e3b30', EAR = '#8a5a3c', CREAM = '#fbf7ef', INK = '#15171c', BLAZE = '#f2541b';
 
 /** Hound head in profile, facing right, with a long ear and scent arcs. Drawn on a 32px grid. */
-function HoundHead({ ear = RUST_DEEP, face = CREAM, ink = INK, arcs = CREAM, line }: { ear?: string; face?: string; ink?: string; arcs?: string; line?: string }) {
+function HoundHead({ ear = EAR, face = CREAM, ink = INK, arcs = BLAZE, collar = BLAZE, line }: { ear?: string; face?: string; ink?: string; arcs?: string; collar?: string; line?: string }) {
   return (
     <g className="hound-head">
       <path d="M9.4 8.6C10.9 6.7 13.5 6 15.9 6.5c2 .4 3.4 1.8 4.5 3.4l4.9 2.5c1.4.8 1.8 2.5.9 3.8-.6.8-1.6 1.1-2.6.9l-3-.4c-.6 1.8-1.6 3.6-2.7 4.8l-1.2 4H10.4c.4-2.8 0-5.2-1.2-7.2-1.3-2.3-1.4-7.2.2-9.7z" fill={face} />
       <path className="hound-ear" d="M11.3 8.4c-1.9 1-2.9 3.9-2.5 7.3.3 2.6 1.4 4.8 2.8 5.2 1.1.3 1.8-.7 1.9-2.1.2-3.3.1-7.1-.6-9.3-.3-1-1-1.4-1.6-1.1z" fill={ear} />
       <circle cx="17.4" cy="11" r="1.05" fill={ink} />
       <circle cx="25.5" cy="14.1" r="1.2" fill={ink} />
-      <path d="M10.6 22.4h6.5l-.4 1.7h-6.1z" fill={ear} />
+      <path d="M10.6 22.4h6.5l-.4 1.7h-6.1z" fill={collar} />
       <g className="hound-arcs" stroke={arcs} strokeWidth="1.3" strokeLinecap="round" fill="none">
         <path d="M28.1 12.4a2.6 2.6 0 0 1 0 3.6" opacity=".9" />
         <path d="M30 10.9a4.8 4.8 0 0 1 0 6.6" opacity=".55" />
@@ -92,11 +93,11 @@ function HoundHead({ ear = RUST_DEEP, face = CREAM, ink = INK, arcs = CREAM, lin
   );
 }
 
-/** Original Oddhound app mark: a hound sniffing, on a rust squircle. */
+/** Original Oddhound app mark: a hound following a scent, on a forest-green squircle. */
 export function HoundMark({ size = 24, title = 'Oddhound' }: { size?: number; title?: string }) {
   return (
     <svg className="hound-mark" width={size} height={size} viewBox="0 0 32 32" role="img" aria-label={title} style={{ flex: 'none' }}>
-      <rect width="32" height="32" rx="8.5" fill={RUST} />
+      <rect width="32" height="32" rx="8.5" fill={FOREST} />
       <path d="M8.5 0h15A8.5 8.5 0 0 1 32 8.5V14H0V8.5A8.5 8.5 0 0 1 8.5 0z" fill="#fff" opacity=".1" />
       <g transform="translate(-1.6 0)"><HoundHead /></g>
       <rect x=".5" y=".5" width="31" height="31" rx="8" fill="none" stroke="#000" strokeOpacity=".12" />
@@ -108,7 +109,7 @@ export function HoundMark({ size = 24, title = 'Oddhound' }: { size?: number; ti
 export function HoundFigure({ size = 72 }: { size?: number }) {
   return (
     <svg className="hound-figure" width={size} height={size} viewBox="4 3 30 26" aria-hidden focusable="false" style={{ flex: 'none' }}>
-      <HoundHead face="var(--hound-face)" ear="var(--hound-ear)" ink="var(--hound-ink)" arcs="var(--accent)" line="var(--hound-line)" />
+      <HoundHead face="var(--hound-face)" ear="var(--hound-ear)" ink="var(--hound-ink)" arcs="var(--blaze)" collar="var(--blaze)" line="var(--hound-line)" />
     </svg>
   );
 }

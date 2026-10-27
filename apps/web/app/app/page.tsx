@@ -2,7 +2,6 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { RunsLeft, Shell } from '@/ui/shell';
 import { HoundFigure, Icon } from '@/ui/icons';
-import { Reveal } from '@/ui/motion';
 import { currentUser, db, mayScanVerifiedSites } from '@/lib/server';
 import { publicStatus } from '@/lib/status-data';
 import { QuickDemoTile } from './quick-demo';
@@ -42,11 +41,11 @@ export default async function Projects() {
 
       <div className="quick">
         {allowed
-          ? <Link className="quick-tile primary" href="/app/projects/new"><span className="tile"><Icon name="plus" /></span><span className="qt-body"><strong>Add a site</strong><span>Verify it, then start a run</span></span><span className="arrow-nudge"><Icon name="arrow" /></span></Link>
+          ? <Link className="quick-tile primary" href="/app/projects/new"><span className="tile"><Icon name="plus" /></span><span className="qt-body"><strong>Add a site</strong><span>Verify it, then start a run</span></span></Link>
           : <div className="quick-tile"><span className="tile tile-neutral"><Icon name="lock" /></span><span className="qt-body"><strong>Verified sites: invite-only</strong><span>Opens after launch safety checks pass</span></span></div>}
         <QuickDemoTile disabledReason={status.killSwitch ? 'Live runs are paused right now.' : !status.liveRunsAvailable ? 'Today’s public budget is used up.' : !status.demoConfigured ? 'The demo target is not configured here.' : null} />
         {status.replayRunId
-          ? <Link className="quick-tile" href={`/runs/${status.replayRunId}?replay=1`}><span className="tile"><Icon name="eye" /></span><span className="qt-body"><strong>Watch a demo replay</strong><span>A recorded real run, played back</span></span><span className="arrow-nudge"><Icon name="arrow" /></span></Link>
+          ? <Link className="quick-tile" href={`/runs/${status.replayRunId}?replay=1`}><span className="tile"><Icon name="eye" /></span><span className="qt-body"><strong>Watch a demo replay</strong><span>A recorded real run, played back</span></span></Link>
           : <div className="quick-tile"><span className="tile tile-neutral"><Icon name="eye" /></span><span className="qt-body"><strong>No replay yet</strong><span>A recorded run will appear here</span></span></div>}
       </div>
 
@@ -60,8 +59,7 @@ export default async function Projects() {
       ) : (
         <div className="proj-grid" role="list" aria-label="Projects">
           {projects.map((p, i) => (
-            <Reveal as="div" key={p.id} delay={Math.min(i, 6) * 50} style={{ display: 'grid' }}>
-              <Link role="listitem" className="proj-card" href={`/app/projects/${p.id}`}>
+            <Link key={p.id} role="listitem" className="proj-card" href={`/app/projects/${p.id}`}>
                 <span className="proj-head">
                   <span className="monogram" style={{ background: tint(p.name) }} aria-hidden>{monogram(p.name)}</span>
                   <span style={{ minWidth: 0, flex: 1 }}>
@@ -79,7 +77,6 @@ export default async function Projects() {
                   <span style={{ color: 'var(--accent-text)', fontWeight: 600 }}>{p.verified ? 'Start a run' : 'Verify'}</span>
                 </span>
               </Link>
-            </Reveal>
           ))}
           {allowed && <Link className="proj-card proj-add" href="/app/projects/new"><span className="tile"><Icon name="plus" /></span><strong>Add another site</strong></Link>}
         </div>

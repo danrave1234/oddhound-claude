@@ -1,0 +1,88 @@
+'use client';
+// Pages the agent reached, laid out as stops on a winding trail. The hound walks to each new stop
+// as it is recorded (or replayed). Drawn in pixel units so labels stay legible at any width.
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+
+export type TrailPage = { key: string; route: string; title: string; device: string };
+
+const ROW_H = 94, PAD_X = 50, TOP = 40, MAX_SHOWN = 24;
+const useIsoLayout = typeof window === 'undefined' ? useEffect : useLayoutEffect;
+
+const short = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+export function TrailMap({ pages, live }: { pages: TrailPage[]; live: boolean }) {
+  const wrap = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(720);
+  useIsoLayout(() => {
+    const el = wrap.current; if (!el) return;
+    const ro = new ResizeObserver(([e]) => setWidth(Math.max(280, Math.round(e!.contentRect.width))));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const hidden = Math.max(0, pages.length - MAX_SHOWN);
+  const shown = pages.slice(hidden);
+  const perRow = Math.max(2, Math.min(7, Math.floor((width - PAD_X * 2) / 128) + 1));
+  const gap = perRow > 1 ? (width - PAD_X * 2) / (perRow - 1) : 0;
+
+  // Boustrophedon layout: left to right, then right to left, like a trail doubling back.
+  const stops = useMemo(() => shown.map((p, i) => {
+    const row = Math.floor(i / perRow), col = i % perRow;
+    const x = PAD_X + (row % 2 === 0 ? col : perRow - 1 - col) * gap;
+    return { ...p, x, y: TOP + row * ROW_H, row };
+  }), [shown, perRow, gap]);
+
+  const d = useMemo(() => {
+    if (!stops.length) return '';
+    let path = `M ${stops[0]!.x} ${stops[0]!.y}`;
+    for (let i = 1; i < stops.length; i++) {
+      const a = stops[i - 1]!, b = stops[i]!;
+      if (a.row === b.row) path += ` C ${(a.x + b.x) / 2} ${a.y - 14}, ${(a.x + b.x) / 2} ${b.y + 14}, ${b.x} ${b.y}`;
+      else { const side = a.row % 2 === 0 ? 1 : -1; const bend = a.x + side * 44; path += ` C ${bend} ${a.y}, ${bend} ${b.y}, ${b.x} ${b.y}`; }
+    }
+    return path;
+  }, [stops]);
+
+  const rows = stops.length ? stops[stops.length - 1]!.row + 1 : 1;
+  const height = TOP + (rows - 1) * ROW_H + 40;
+  const last = stops[stops.length - 1];
+  const prev = stops[stops.length - 2];
+  const facingLeft = last ? (prev ? last.x < prev.x || (last.row % 2 === 1 && last.x === prev.x) : false) : false;
+  // Edge stops have only PAD_X of room on one side, so cap label length to fit there too.
+  const labelChars = Math.max(8, Math.min(Math.floor(gap / 7.2), Math.floor((PAD_X * 2 + 10) / 6.6)));
+
+  return (
+    <div className="tmap" ref={wrap}>
+      <ol className="sr-only" aria-label="Pages discovered, in order">{pages.map((p) => <li key={p.key}>{p.title || p.route} ({p.route}, {p.device})</li>)}</ol>
+      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden focusable="false">
+        <path d={d} className="tmap-path" />
+        {stops.map((s, i) => {
+          const isLast = i === stops.length - 1;
+          return (
+            <g key={s.key} transform={`translate(${s.x} ${s.y})`} className={`tmap-stop${isLast ? ' last' : ''}${isLast && live ? ' fresh' : ''}`}>
+              <title>{`${s.title || s.route} — ${s.route}`}</title>
+              <circle r={isLast ? 9 : 6.5} className="tmap-dot" />
+              {s.device === 'mobile' && <rect x={-2.5} y={-4} width={5} height={8} rx={1.2} className="tmap-phone" />}
+              <text y={24} textAnchor="middle" className="tmap-title">{short(s.title || s.route, labelChars)}</text>
+              <text y={38} textAnchor="middle" className="tmap-route">{short(s.route, labelChars + 2)}</text>
+            </g>
+          );
+        })}
+        {last && (
+          <g className="tmap-hound" style={{ transform: `translate(${last.x}px, ${last.y - 30}px)` }}>
+            <g style={{ transform: facingLeft ? 'scaleX(-1)' : undefined }}>
+              <g transform="translate(-17 -16)">
+                <path d="M9.4 8.6C10.9 6.7 13.5 6 15.9 6.5c2 .4 3.4 1.8 4.5 3.4l4.9 2.5c1.4.8 1.8 2.5.9 3.8-.6.8-1.6 1.1-2.6.9l-3-.4c-.6 1.8-1.6 3.6-2.7 4.8l-1.2 4H10.4c.4-2.8 0-5.2-1.2-7.2-1.3-2.3-1.4-7.2.2-9.7z" fill="var(--hound-face)" stroke="var(--hound-line)" strokeWidth=".7" />
+                <path d="M11.3 8.4c-1.9 1-2.9 3.9-2.5 7.3.3 2.6 1.4 4.8 2.8 5.2 1.1.3 1.8-.7 1.9-2.1.2-3.3.1-7.1-.6-9.3-.3-1-1-1.4-1.6-1.1z" fill="var(--hound-ear)" />
+                <circle cx="17.4" cy="11" r="1.05" fill="var(--hound-ink)" /><circle cx="25.5" cy="14.1" r="1.2" fill="var(--hound-ink)" />
+                <path d="M10.6 22.4h6.5l-.4 1.7h-6.1z" fill="var(--blaze)" />
+                {live && <g key={last.key} className="tmap-sniff" stroke="var(--blaze)" strokeWidth="1.3" strokeLinecap="round" fill="none"><path d="M28.1 12.4a2.6 2.6 0 0 1 0 3.6" /><path d="M30 10.9a4.8 4.8 0 0 1 0 6.6" opacity=".55" /></g>}
+              </g>
+            </g>
+          </g>
+        )}
+      </svg>
+      {hidden > 0 && <p className="tmap-more">{hidden} earlier {hidden === 1 ? 'page' : 'pages'} not shown</p>}
+    </div>
+  );
+}

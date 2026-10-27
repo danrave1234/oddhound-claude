@@ -23,7 +23,7 @@ export function WorkflowMap({ states, transitions }: { states: State[]; transiti
       const row = perLevel.get(d) ?? 0; perLevel.set(d, row + 1);
       return {
         id: s.id, position: { x: d * 260, y: row * 104 },
-        data: { label: <div className="flow-node"><strong>{s.title}</strong><span>{s.route}</span><span>{s.actor} · {s.device}</span></div> },
+        data: { label: <div className="flow-node"><strong>{s.title}</strong><span>{s.route}</span><span>{s.actor}, {s.device}</span></div> },
         style: { width: 210, padding: '10px 12px', borderRadius: 10, border: `1px solid ${i === 0 ? 'var(--accent)' : 'var(--separator-strong)'}`, background: 'var(--surface)', color: 'var(--text)', boxShadow: 'var(--shadow-1)' },
       };
     });

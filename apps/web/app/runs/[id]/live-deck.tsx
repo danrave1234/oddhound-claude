@@ -8,6 +8,7 @@ import { Icon, type IconName } from '@/ui/icons';
 import { CountUp, Ring, prefersReducedMotion, useNow } from '@/ui/motion';
 import { statusLabel } from '@/ui/status';
 import { LIMITS } from '@core/contracts/limits.ts';
+import { TrailMap } from './trail-map';
 
 type Ev = { seq: number; at: string; type: string; payload: Record<string, any> };
 type DeckSnap = {
@@ -130,11 +131,6 @@ export function LiveDeck({ snap, active, replay, onOpenBrowser, onOpenFindings }
   const bad = TERMINAL_BAD.has(model.status);
   const spendMicros = snap.spend.settled + snap.spend.outstanding;
   const planDone = model.charters.filter((c) => c.status === 'completed').length;
-  const trailRef = useRef<HTMLOListElement>(null);
-  const [followTrail, setFollowTrail] = useState(true);
-  useEffect(() => { // keep the newest page in view unless the user scrolled the trail themselves
-    const el = trailRef.current; if (el && followTrail) el.scrollLeft = el.scrollWidth;
-  }, [model.pages.length, followTrail]);
   const showLiveMotion = active || (replay && !atEnd);
   const [failedFrame, setFailedFrame] = useState<string | null>(null);
 
@@ -223,19 +219,12 @@ export function LiveDeck({ snap, active, replay, onOpenBrowser, onOpenFindings }
         </div>
       </div>
 
-      {/* Discovered pages trail */}
+      {/* Discovered pages as a trail map */}
       <div className="trail-wrap">
-        <span className="trail-label"><Icon name="trail" /> Trail</span>
-        {model.pages.length ? (
-          <ol className="trail" ref={trailRef} aria-label="Pages discovered, in order" onScroll={(e) => { const el = e.currentTarget; setFollowTrail(el.scrollLeft + el.clientWidth >= el.scrollWidth - 8); }}>
-            {model.pages.map((p, i) => (
-              <li key={p.key} className={i === model.pages.length - 1 && showLiveMotion ? 'newest' : ''}>
-                <span className="trail-node"><Icon name={p.device === 'mobile' ? 'mobile' : 'paw'} /></span>
-                <span className="trail-text"><strong>{p.title || p.route}</strong><span className="mono">{p.route}</span></span>
-              </li>
-            ))}
-          </ol>
-        ) : <span className="muted" style={{ fontSize: 13 }}>{active ? 'The trail grows as the agent reaches new pages.' : 'No pages recorded.'}</span>}
+        <div className="trail-head"><span className="trail-label">Trail</span><span className="muted" style={{ fontSize: 12.5 }}>{model.pages.length ? `${model.pages.length} ${model.pages.length === 1 ? 'page' : 'pages'} reached, in order` : ''}</span></div>
+        {model.pages.length
+          ? <TrailMap pages={model.pages} live={showLiveMotion} />
+          : <p className="muted" style={{ fontSize: 13, margin: 0 }}>{active ? 'The trail grows as the agent reaches new pages.' : 'No pages recorded.'}</p>}
       </div>
 
       {/* Arrival toasts (polite, never take focus) */}

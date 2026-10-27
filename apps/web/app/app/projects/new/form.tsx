@@ -55,7 +55,7 @@ export function NewProjectForm() {
 
       {error && <p role="alert" className="status-line" style={{ color: 'var(--bad)', marginBottom: 12 }}><Icon name="fail" /> {error}</p>}
       <div className="sticky-actions">
-        <button className="btn btn-primary" disabled={busy} aria-busy={busy || undefined}>{busy ? 'Creating…' : <>Continue to verification <Icon name="arrow" /></>}</button>
+        <button className="btn btn-primary" disabled={busy} aria-busy={busy || undefined}>{busy ? 'Creating…' : 'Continue to verification'}</button>
         <span className="muted" style={{ fontSize: 12.5 }}>Step 1 of 3</span>
       </div>
     </form>
