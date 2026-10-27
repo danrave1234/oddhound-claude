@@ -8,9 +8,36 @@ import { DEVICE_PROFILES } from './limits.ts';
 export const RuleSchema = z.object({
   id: z.string().regex(/^[A-Za-z0-9_-]{1,32}$/),
   text: z.string().min(3).max(400),
-  source: z.enum(['owner', 'demo_target']),
+  source: z.enum(['owner', 'demo_target', 'baseline']),
 });
 export type Rule = z.infer<typeof RuleSchema>;
+
+/**
+ * Oddhound's baseline rules: explicit, published expectations that hold for almost any web app, so a
+ * run can verify real bugs without the owner writing rules first. They are added to every contract
+ * and shown with the run. A finding against one is still only `verified` after independent replay.
+ */
+export const BASELINE_RULES: Rule[] = [
+  { id: 'B1', text: 'Normal use of the site never causes a server error (HTTP 5xx).', source: 'baseline' },
+  { id: 'B2', text: 'Pages do not throw uncaught JavaScript errors during normal use.', source: 'baseline' },
+  { id: 'B3', text: 'Text a user enters is displayed as text, never rendered as HTML markup.', source: 'baseline' },
+  { id: 'B4', text: 'Pages and error messages do not expose stack traces or internal error details.', source: 'baseline' },
+  { id: 'B5', text: 'Pages fit a 390px-wide phone screen without sideways scrolling.', source: 'baseline' },
+  { id: 'B6', text: 'Links on the site lead to pages that exist (no HTTP 404).', source: 'baseline' },
+  { id: 'B7', text: 'A signed-in user cannot see or change another user\'s private records.', source: 'baseline' },
+  { id: 'B8', text: 'Required fields reject blank or whitespace-only input.', source: 'baseline' },
+  { id: 'B9', text: 'After signing out, account-only pages and data are not shown without signing in again.', source: 'baseline' },
+];
+/** How serious a confirmed baseline violation is, for ordering and display. */
+export const BASELINE_IMPACT: Record<string, 'high' | 'medium' | 'low'> = {
+  B1: 'high', B2: 'medium', B3: 'high', B4: 'medium', B5: 'low', B6: 'low', B7: 'high', B8: 'medium', B9: 'high',
+};
+
+/** Owner (or demo) rules plus the baseline rules, without duplicate IDs. */
+export function withBaselineRules(rules: Rule[]): Rule[] {
+  const ids = new Set(rules.map((r) => r.id));
+  return [...rules, ...BASELINE_RULES.filter((b) => !ids.has(b.id))];
+}
 
 export const AccountRefSchema = z.object({
   ref: z.string().regex(/^cred_[A-Za-z0-9_-]{6,64}$/),
@@ -45,8 +72,9 @@ export const RunContractSchema = z.object({
   testMode: z.enum(['active', 'observation_only']),
   productionWritesAcknowledged: z.boolean(),
   description: z.string().max(1000),
-  goals: z.array(z.string().min(3).max(300)).min(1).max(8),
-  rules: z.array(RuleSchema).max(20),
+  // Optional focus areas. They set priorities; they never limit what the agent may test.
+  goals: z.array(z.string().min(3).max(300)).max(8),
+  rules: z.array(RuleSchema).max(30),
   capabilities: CapabilitiesSchema,
   accounts: z.array(AccountRefSchema).max(4),
   registration: z.object({ allowed: z.boolean(), emailDomain: z.string().regex(/^[a-z0-9.-]+\.[a-z]{2,}$/), maxIdentities: z.number().int().min(0).max(3) }),
@@ -72,8 +100,15 @@ export type RunContract = z.infer<typeof RunContractSchema>;
 export const DEFAULT_DENIED_PATH_KEYWORDS = [
   'admin', 'checkout', 'pay', 'payment', 'payments', 'billing', 'invoice', 'invoices', 'subscribe', 'subscription', 'subscriptions',
   'stripe', 'paymongo', 'paypal', 'refund', 'withdraw', 'transfer', 'webhook', 'webhooks', 'cron', 'delete', 'destroy', 'purge',
-  'domain', 'domains', 'redeem', 'logout', 'signout', 'sign-out', 'log-out',
+  'domain', 'domains', 'redeem',
 ];
+
+/**
+ * Signing out is a normal QA check (B9) when the agent uses its own synthetic accounts, which it can
+ * sign back into. When the owner signed in through the handoff, signing out would end the owner's
+ * session for the rest of the run, so these words are added to the blocked list then.
+ */
+export const SIGN_OUT_KEYWORDS = ['logout', 'signout', 'sign-out', 'log-out'];
 
 export const DEFAULT_DENIED_OPERATIONS = [
   'Do not pay, subscribe, or enter payment details.',
@@ -113,7 +148,7 @@ export const KEYWORDS_BLOCKING_READS = new Set([
   'logout', 'signout', 'sign-out', 'log-out', 'delete', 'destroy', 'purge', 'refund', 'withdraw', 'transfer', 'redeem',
   'webhook', 'webhooks', 'cron', 'checkout', 'pay', 'subscribe', 'stripe', 'paymongo', 'paypal',
 ]);
-const DEFAULT_KEYWORD_SET = new Set(DEFAULT_DENIED_PATH_KEYWORDS);
+const DEFAULT_KEYWORD_SET = new Set([...DEFAULT_DENIED_PATH_KEYWORDS, ...SIGN_OUT_KEYWORDS]);
 
 /** Whether a background read (GET/HEAD/OPTIONS that is not a top-level navigation) to this path is blocked. */
 export function keywordsBlockRead(matched: readonly string[]): boolean {
@@ -148,7 +183,7 @@ export function demoTargetContract(origin: string, now = new Date()): RunContrac
       'Try unexpected inputs and orderings on the booking form and check the rules hold.',
       'Check the booking form on a phone-sized screen.',
     ],
-    rules: DEMO_TARGET_RULES,
+    rules: withBaselineRules(DEMO_TARGET_RULES),
     capabilities: { register: true, login: true, createRecords: true, editRecords: true, cancelRecords: true, boundaryValues: true, repeatSubmission: true, unusualOrder: true, crossAccountRead: true },
     accounts: [],
     registration: { allowed: true, emailDomain: 'example.test', maxIdentities: 3 },

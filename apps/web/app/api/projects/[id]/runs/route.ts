@@ -2,15 +2,15 @@
 import { z } from 'zod';
 import { currentUser, db, json, mayScanVerifiedSites } from '@/lib/server';
 import { admitRun } from '@core/ledger/runs.ts';
-import { RunContractSchema, DEFAULT_DENIED_PATH_KEYWORDS, DEFAULT_DENIED_OPERATIONS, HANDOFF_DENIED_OPERATIONS, type RunContract } from '@core/contracts/contract.ts';
+import { RunContractSchema, DEFAULT_DENIED_PATH_KEYWORDS, DEFAULT_DENIED_OPERATIONS, HANDOFF_DENIED_OPERATIONS, SIGN_OUT_KEYWORDS, withBaselineRules, type RunContract } from '@core/contracts/contract.ts';
 import { storeCredential } from '@core/ledger/credentials.ts';
 import { enqueueRun } from '@core/queue/queue.ts';
 
 const Body = z.object({
   testMode: z.enum(['active', 'observation_only']),
   productionWritesAcknowledged: z.boolean().default(false),
-  goals: z.array(z.string().trim().min(3).max(300)).min(1).max(8),
-  rules: z.array(z.string().trim().min(3).max(400)).max(20),
+  goals: z.array(z.string().trim().min(3).max(300)).max(8).default([]),
+  rules: z.array(z.string().trim().min(3).max(400)).max(20).default([]),
   allowRegistration: z.boolean(),
   emailDomain: z.string().trim().regex(/^[a-z0-9.-]+\.[a-z]{2,}$/).default('example.test'),
   secondActor: z.boolean().default(false),
@@ -55,12 +55,13 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     productionWritesAcknowledged: b.productionWritesAcknowledged,
     description: project.description || 'No description provided.',
     goals: b.goals,
-    rules: b.rules.map((text, i) => ({ id: `R${i + 1}`, text, source: 'owner' })),
+    rules: withBaselineRules(b.rules.map((text, i) => ({ id: `R${i + 1}`, text, source: 'owner' as const }))),
     capabilities: { register: writes && b.allowRegistration, login: true, createRecords: writes, editRecords: writes, cancelRecords: writes, boundaryValues: true, repeatSubmission: writes, unusualOrder: true, crossAccountRead: b.secondActor && !b.handoff.enabled },
     accounts,
     registration: { allowed: writes && b.allowRegistration, emailDomain: b.emailDomain, maxIdentities: 3 },
     deniedPathPrefixes: b.deniedPathPrefixes,
-    deniedPathKeywords: b.deniedPathKeywords,
+    // Signing out would end the owner's handed-over session, so it is blocked only then.
+    deniedPathKeywords: b.handoff.enabled ? [...new Set([...b.deniedPathKeywords, ...SIGN_OUT_KEYWORDS])].slice(0, 60) : b.deniedPathKeywords,
     deniedOperations: [...b.deniedOperations, ...(b.handoff.enabled ? HANDOFF_DENIED_OPERATIONS : [])].slice(0, 20),
     handoff: b.handoff,
     devices: b.devices,

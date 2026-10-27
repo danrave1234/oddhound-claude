@@ -11,7 +11,7 @@ export async function loadRunSnapshot(runId: string) {
       provider, model, queued_at, started_at, finished_at, expires_at, parent_run_id, contract->'goals' AS goals, contract->'rules' AS rules, contract->'devices' AS devices, COALESCE((contract->'handoff'->>'enabled')::boolean, false) AS handoff_enabled
     FROM runs WHERE id = $1`, [runId])).rows[0];
   if (!run) return null;
-  const [workflows, states, transitions, findings, events, actions, shot, spend, children] = await Promise.all([
+  const [workflows, states, transitions, findings, events, actions, shot, spend, children, plan, detected] = await Promise.all([
     pool.query('SELECT name, status, summary, updated_at FROM workflows WHERE run_id = $1 ORDER BY updated_at', [runId]),
     pool.query('SELECT id, route, title, actor, device FROM graph_states WHERE run_id = $1 ORDER BY first_seen_at', [runId]),
     pool.query('SELECT id, from_state, to_state, label FROM graph_transitions WHERE run_id = $1', [runId]),
@@ -22,6 +22,9 @@ export async function loadRunSnapshot(runId: string) {
     pool.query(`SELECT id, label, created_at FROM artifacts WHERE run_id = $1 AND kind = 'screenshot' ORDER BY created_at DESC LIMIT 1`, [runId]),
     runSpend(pool, runId),
     pool.query(`SELECT id, mode, status, created_at FROM runs WHERE parent_run_id = $1 ORDER BY created_at DESC`, [runId]),
+    // The agent's own test plan (latest version) and what the automatic detectors raised.
+    pool.query(`SELECT payload FROM run_events WHERE run_id = $1 AND type = 'plan.updated' ORDER BY seq DESC LIMIT 1`, [runId]),
+    pool.query(`SELECT count(*)::int AS n FROM run_events WHERE run_id = $1 AND type = 'signal.detected'`, [runId]),
   ]);
   return {
     run,
@@ -33,5 +36,7 @@ export async function loadRunSnapshot(runId: string) {
     latestScreenshot: shot.rows[0] ?? null,
     spend,
     retests: children.rows,
+    plan: ((plan.rows[0]?.payload?.charters ?? []) as { id: string; area: string; risk: string; technique: string; status: string; note: string | null }[]),
+    detectedSignals: detected.rows[0]?.n as number ?? 0,
   };
 }

@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Icon, type IconName } from '@/ui/icons';
-import { DEFAULT_DENIED_PATH_KEYWORDS, DEFAULT_DENIED_OPERATIONS } from '@core/contracts/contract.ts';
+import { BASELINE_RULES, DEFAULT_DENIED_PATH_KEYWORDS, DEFAULT_DENIED_OPERATIONS } from '@core/contracts/contract.ts';
 
 const lines = (s: string) => s.split('\n').map((l) => l.trim()).filter(Boolean);
 
@@ -81,12 +81,20 @@ export function RunSetup({ projectId, environment }: { projectId: string; enviro
       </div>
 
       <div className="form-section">
-        <h3 className="h3">Goals and rules</h3>
-        <label className="field"><span>Goals <span className="muted" style={{ fontWeight: 400 }}>— one per line</span></span>
-          <textarea className="textarea" name="goals" required rows={3} defaultValue={'Create an account and sign in.\nComplete the main workflow.\nTry unexpected inputs and orderings and check the rules hold.'} /></label>
-        <label className="field"><span>Rules the site must follow <span className="muted" style={{ fontWeight: 400 }}>— one per line</span></span>
-          <textarea className="textarea" name="rules" rows={3} placeholder="A booking must have between 1 and 8 guests." aria-describedby="rules-hint" />
-          <small id="rules-hint">Findings are judged only against these rules.</small></label>
+        <h3 className="h3">What Oddhound checks</h3>
+        <p className="muted" style={{ margin: 0, fontSize: 13.5 }}>The agent maps your site, writes its own risk-ranked test plan and works through it. Nothing to fill in here unless you want to steer it.</p>
+        <details className="well" style={{ fontSize: 13.5 }}>
+          <summary style={{ cursor: 'pointer', fontWeight: 600 }}>Baseline rules checked on every site ({BASELINE_RULES.length})</summary>
+          <ul style={{ margin: '10px 0 0', paddingLeft: 18, display: 'grid', gap: 4 }}>
+            {BASELINE_RULES.map((r) => <li key={r.id}><span className="mono muted">{r.id}</span> {r.text}</li>)}
+          </ul>
+        </details>
+        <label className="field"><span>Focus areas <span className="muted" style={{ fontWeight: 400 }}>— optional, one per line</span></span>
+          <textarea className="textarea" name="goals" rows={2} placeholder="The checkout-free booking flow. The new notes editor." aria-describedby="goals-hint" />
+          <small id="goals-hint">Tested early. They set priorities; they never limit what the agent tests.</small></label>
+        <label className="field"><span>Your own rules <span className="muted" style={{ fontWeight: 400 }}>— optional, one per line</span></span>
+          <textarea className="textarea" name="rules" rows={2} placeholder="A booking must have between 1 and 8 guests." aria-describedby="rules-hint" />
+          <small id="rules-hint">Business rules only you know. Findings are judged against these and the baseline rules.</small></label>
       </div>
 
       <fieldset className="form-section" style={{ border: 0, margin: 0 }}>
@@ -97,7 +105,7 @@ export function RunSetup({ projectId, environment }: { projectId: string; enviro
               <label className="field" style={{ maxWidth: 320 }}><span>Synthetic email domain</span><input className="input mono" name="emailDomain" defaultValue="example.test" /></label>
             </div>
           </Option>
-          <Option name="secondActor" icon="lock" title="Two-account check" desc="A second account tries to reach records the agent created itself." />
+          <Option name="secondActor" icon="lock" defaultChecked={mode === 'active'} title="Two-account check" desc="A second account tries to reach records the agent created itself." />
           <Option name="device_desktop" icon="desktop" defaultChecked title="Desktop" desc="1440 × 900" />
           <Option name="device_mobile" icon="mobile" defaultChecked title="Phone" desc="390 × 844, emulated" />
         </div>

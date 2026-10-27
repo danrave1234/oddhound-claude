@@ -5,6 +5,42 @@ import type { Scenario } from '../verifier/scenario.ts';
 
 const j = (v: unknown) => JSON.stringify(v);
 
+type Trace = Extract<Scenario, { kind: 'trace' }>;
+
+/** Trace steps and oracle as test code. Every value is embedded with JSON.stringify only. */
+function traceBody(s: Trace, signedIn: boolean): string {
+  const vars = signedIn ? '{ ...who, marker }' : '{ ...identity(), marker }';
+  const lines: string[] = [];
+  if (s.device === 'mobile') lines.push('  await page.setViewportSize({ width: 390, height: 844 });');
+  lines.push('  const failures: string[] = [];');
+  lines.push("  page.on('pageerror', (e) => failures.push('pageerror: ' + e.message));");
+  lines.push("  page.on('response', (r) => failures.push('status ' + r.status() + ' ' + r.request().method() + ' ' + new URL(r.url()).pathname));");
+  lines.push(`  const vars = ${vars};`);
+  lines.push(`  await page.goto(new URL(${j(s.start)}, BASE_URL).toString());`);
+  for (const st of s.steps) {
+    if (st.op === 'goto') lines.push(`  await page.goto(new URL(${j(st.path)}, BASE_URL).toString());`);
+    else if (st.op === 'back') lines.push('  await page.goBack();');
+    else if (st.op === 'press') lines.push(`  await page.keyboard.press(${j(st.key === 'Space' ? ' ' : st.key)});`);
+    else if (st.op === 'fill') lines.push(`  await (await field(page, ${j(st.field)})).fill(fill(${j(st.value)}, vars));`);
+    else if (st.op === 'select') lines.push(`  await (await field(page, ${j(st.field)})).selectOption(fill(${j(st.value)}, vars));`);
+    else lines.push(`  await ${st.role === 'other' ? `page.getByText(${j(st.target)})` : `page.getByRole(${j(st.role)}, { name: ${j(st.target)} })`}.first().click();`);
+  }
+  lines.push("  await page.waitForLoadState('networkidle').catch(() => {});");
+  const o = s.oracle;
+  lines.push('  // Rule: the problem below must not happen.');
+  if (o.type === 'http_status') {
+    const routeRe = `^${o.route.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/:id/g, '[^/]+')}$`;
+    lines.push(`  const route = new RegExp(${j(routeRe)});`);
+    lines.push(`  expect(failures.filter((f) => { const [, code, , path] = f.split(' '); return +code >= ${o.min} && +code <= ${o.max} && route.test(path ?? ''); })).toEqual([]);`);
+  }
+  else if (o.type === 'page_error') lines.push("  expect(failures.filter((f) => f.startsWith('pageerror'))).toEqual([]);");
+  else if (o.type === 'markup_rendered') lines.push("  await expect(page.locator('[data-oh-probe]')).toHaveCount(0);");
+  else if (o.type === 'error_text') lines.push("  await expect(page.locator('body')).not.toContainText(/Traceback|SQLSTATE|Exception|at .+:\\d+:\\d+\\)/);");
+  else if (o.type === 'mobile_overflow') lines.push('  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 4)).toBe(true);');
+  else lines.push(`  await expect(page.locator('body')).not.toContainText(${j(o.text)});`);
+  return `${lines.join('\n')}\n`;
+}
+
 export function playwrightTest(s: Scenario, meta: { title: string; scenarioId: string; assertionHash: string }): string {
   const header = `// Oddhound regression test (exported). Scenario ${meta.scenarioId}, assertion ${meta.assertionHash.slice(0, 12)}.
 // Run: BASE_URL=https://your-staging-site npx playwright test oddhound-${meta.scenarioId.slice(0, 8)}.spec.ts
@@ -58,6 +94,8 @@ async function submitForm(page: Page, path: string, fields: Record<string, strin
   await expect(page2.locator('body')).not.toContainText(marker);
   await other.close();
 `;
+  } else if (s.kind === 'trace') {
+    body = `${auth}${traceBody(s, Boolean(auth))}`;
   } else {
     body = `${auth}  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(new URL(${j(s.path)}, BASE_URL).toString());

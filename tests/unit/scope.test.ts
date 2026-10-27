@@ -1,7 +1,7 @@
 // SELF-02, SELF-16, SELF-17: what the page may do inside the browser.
 import { describe, it, expect } from 'vitest';
 import { decide, policyFromContract } from '../../packages/core/browser/scope.ts';
-import { demoTargetContract, DEFAULT_DENIED_PATH_KEYWORDS, pathHasDeniedKeyword } from '../../packages/core/contracts/contract.ts';
+import { demoTargetContract, DEFAULT_DENIED_PATH_KEYWORDS, SIGN_OUT_KEYWORDS, pathHasDeniedKeyword } from '../../packages/core/contracts/contract.ts';
 
 const active = policyFromContract(demoTargetContract('https://shop.example'));
 const observe = policyFromContract({ ...demoTargetContract('https://shop.example'), testMode: 'observation_only' });
@@ -41,9 +41,15 @@ describe('scope decisions', () => {
 
 describe('safe default blocks (denied URL words)', () => {
   const kw = DEFAULT_DENIED_PATH_KEYWORDS;
-  it('blocks money, admin, cron, domain and logout URLs as segments or dash parts', () => {
-    for (const p of ['/api/paymongo/create-link', '/subscribe/123', '/api/vercel/add-domain', '/admin/codes', '/api/cron/renew', '/auth/signout', '/account/delete', '/api/codes/redeem', '/checkout', '/sign-out'])
+  it('blocks money, admin, cron and domain URLs as segments or dash parts', () => {
+    for (const p of ['/api/paymongo/create-link', '/subscribe/123', '/api/vercel/add-domain', '/admin/codes', '/api/cron/renew', '/account/delete', '/api/codes/redeem', '/checkout'])
       expect(pathHasDeniedKeyword(p, kw), p).not.toBeNull();
+  });
+  it('lets the agent test sign-out with its own accounts, but blocks it when the owner handed over a session', () => {
+    for (const p of ['/auth/signout', '/sign-out', '/logout']) {
+      expect(pathHasDeniedKeyword(p, kw), p).toBeNull();
+      expect(pathHasDeniedKeyword(p, [...kw, ...SIGN_OUT_KEYWORDS]), p).not.toBeNull();
+    }
   });
   it('leaves ordinary pages alone', () => {
     for (const p of ['/', '/pricing', '/login', '/dashboard', '/dashboard/profile', '/contact', '/payday-tips', '/administrator-guide'])
@@ -59,7 +65,7 @@ describe('safe default blocks (denied URL words)', () => {
   });
 
   it('lets the page read its own data from a denied area, unless the word can act through a GET', () => {
-    const api = { ...active, apiOrigins: new Set(['https://api.shop.example']), deniedPathKeywords: kw };
+    const api = { ...active, apiOrigins: new Set(['https://api.shop.example']), deniedPathKeywords: [...kw, ...SIGN_OUT_KEYWORDS] };
     const read = (url: string) => decide(api, req(url, 'GET', { resourceType: 'fetch' }));
     // Reads that change nothing (seen on a real site: the page loads the user's plan and usage).
     for (const u of ['https://api.shop.example/subscriptions/my-subscription', 'https://api.shop.example/subscriptions/usage/history?days=30',

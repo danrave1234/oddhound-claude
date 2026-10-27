@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { randomBytes } from 'node:crypto';
 import type { BrowserContext, Page } from 'playwright';
 import { canonicalJson, sha256 } from '../ledger/runs.ts';
+import { attachSentinels, checkPage, describeSignal, routeOf, type Signal } from '../browser/sentinels.ts';
 
 const Template = z.string().max(200);
 const FieldMap = z.record(z.string().min(1).max(80), Template).refine((m) => Object.keys(m).length > 0 && Object.keys(m).length <= 12, 'between 1 and 12 fields');
@@ -58,8 +59,41 @@ export const ScenarioSchema = z.discriminatedUnion('kind', [
     control: z.string().min(1).max(80), // visible text of the button/link that must be usable
     expectation: z.literal('reachable'),
   }),
+  // A trace: the exact steps Oddhound recorded in its own action ledger (never model-authored),
+  // replayed in a fresh session and judged by a fixed oracle from trusted code.
+  z.object({
+    kind: z.literal('trace'),
+    device: z.enum(['desktop', 'mobile']),
+    auth: AuthRecipeSchema.optional(),
+    start: z.string().startsWith('/').max(300),
+    steps: z.array(z.lazy(() => TraceStepSchema)).max(14),
+    oracle: z.lazy(() => OracleSchema),
+  }),
 ]);
 export type Scenario = z.infer<typeof ScenarioSchema>;
+
+export const TraceStepSchema = z.discriminatedUnion('op', [
+  z.object({ op: z.literal('goto'), path: z.string().startsWith('/').max(300) }),
+  z.object({ op: z.literal('click'), target: z.string().min(1).max(120), role: z.enum(['button', 'link', 'other']) }),
+  z.object({ op: z.literal('fill'), field: z.string().min(1).max(80), value: z.string().max(600) }),
+  z.object({ op: z.literal('select'), field: z.string().min(1).max(80), value: z.string().max(200) }),
+  z.object({ op: z.literal('press'), key: z.enum(['Enter', 'Tab', 'Escape', 'ArrowDown', 'ArrowUp', 'Space']) }),
+  z.object({ op: z.literal('back') }),
+]);
+export type TraceStep = z.infer<typeof TraceStepSchema>;
+
+/** What "the bug reproduced" means for a trace. Each is evaluated by trusted code only. */
+export const OracleSchema = z.discriminatedUnion('type', [
+  // B1/B6: a response from an in-scope origin with this status range on this route.
+  z.object({ type: z.literal('http_status'), min: z.number().int().min(400).max(599), max: z.number().int().min(400).max(599), method: z.string().max(10).optional(), route: z.string().max(300) }),
+  z.object({ type: z.literal('page_error'), contains: z.string().max(120).optional() }), // B2
+  z.object({ type: z.literal('markup_rendered') }), // B3
+  z.object({ type: z.literal('error_text'), pattern: z.string().max(40) }), // B4
+  z.object({ type: z.literal('mobile_overflow') }), // B5
+  // Model-reported traces: text that must NOT be visible at the end (e.g. account data after sign-out).
+  z.object({ type: z.literal('text_present'), text: z.string().min(2).max(120) }),
+]);
+export type Oracle = z.infer<typeof OracleSchema>;
 
 /** Structural soundness checks the schema cannot express. Returns a reason when the scenario is malformed. */
 export function scenarioDefect(s: Scenario): string | null {
@@ -93,6 +127,8 @@ export type ReplayEnv = {
   onIdentityCreated?: (role: string) => void;
   /** The owner's signed-in session from this run's handoff (memory only; absent in later runs). */
   handoffState?: StorageState;
+  /** Origins whose failures count as the site's own (the verified site and verified API hosts). */
+  inScope?: (origin: string) => boolean;
 };
 
 export function newReplaySessions(): Map<string, StorageState> { return new Map(); }
@@ -237,6 +273,8 @@ export async function replayScenario(s: Scenario, env: ReplayEnv): Promise<Repla
       };
     }
 
+    if (s.kind === 'trace') return await replayTrace(s, open, env, screenshots);
+
     // mobile_reachability
     const page = await open('mobile', s.auth ? 'A' : undefined, s.auth);
     await page.goto(new URL(s.path, env.origin).toString(), { waitUntil: 'domcontentloaded' });
@@ -271,6 +309,83 @@ export async function replayScenario(s: Scenario, env: ReplayEnv): Promise<Repla
   } finally {
     for (const c of contexts) await c.close().catch(() => {});
   }
+}
+
+type TraceScenario = Extract<Scenario, { kind: 'trace' }>;
+
+async function runStep(page: Page, origin: string, step: TraceStep, vars: Record<string, string>): Promise<void> {
+  switch (step.op) {
+    case 'goto': await page.goto(new URL(step.path, origin).toString(), { waitUntil: 'domcontentloaded' }); return;
+    case 'back': await page.goBack({ waitUntil: 'domcontentloaded' }); return;
+    case 'press': await page.keyboard.press(step.key === 'Space' ? ' ' : step.key); return;
+    case 'fill': await (await fieldLocator(page, step.field)).fill(expand(step.value, vars), { timeout: 5_000 }); return;
+    case 'select': await (await fieldLocator(page, step.field)).selectOption(expand(step.value, vars), { timeout: 5_000 }); return;
+    case 'click': {
+      const byRole = step.role === 'other'
+        ? page.getByText(step.target, { exact: true })
+        : page.getByRole(step.role, { name: step.target, exact: true }).or(page.getByRole(step.role, { name: step.target }));
+      const loc = (await byRole.count()) ? byRole.first() : page.getByText(step.target).first();
+      if (!(await loc.count())) throw new ReplayBlocked(`could not find "${step.target}" to click`);
+      await loc.click({ timeout: 5_000 });
+      await page.waitForLoadState('domcontentloaded').catch(() => {});
+    }
+  }
+}
+
+function routeMatches(pattern: string, url: string): boolean {
+  return routeOf(url) === pattern;
+}
+
+async function replayTrace(
+  s: TraceScenario,
+  open: (device: 'desktop' | 'mobile', role?: string, auth?: AuthRecipe) => Promise<Page>,
+  env: ReplayEnv,
+  screenshots: ReplayResult['screenshots'],
+): Promise<ReplayResult> {
+  const marker = `OH${randomBytes(4).toString('hex').toUpperCase()}`;
+  const page = await open(s.device, s.auth ? 'A' : undefined, s.auth);
+  const inScope = env.inScope ?? ((o: string) => o === new URL(env.origin).origin);
+  const signals: Signal[] = [];
+  attachSentinels(page, inScope, (sig) => signals.push(sig));
+  await page.goto(new URL(s.start, env.origin).toString(), { waitUntil: 'domcontentloaded' });
+  const vars = { ...env.identity(), marker };
+  for (const [i, step] of s.steps.entries()) {
+    try { await runStep(page, env.origin, step, vars); }
+    catch (e) {
+      if (e instanceof ReplayBlocked) throw new ReplayBlocked(`step ${i + 1} (${step.op}): ${e.message}`);
+      throw new ReplayBlocked(`step ${i + 1} (${step.op}) failed: ${(e as Error).message.split('\n')[0]!.slice(0, 160)}`);
+    }
+    await page.waitForTimeout(300);
+  }
+  // Let requests started by the last step finish before judging.
+  await page.waitForLoadState('networkidle', { timeout: 4_000 }).catch(() => {});
+  signals.push(...await checkPage(page, s.device === 'mobile'));
+  screenshots.push(await shot(page, 'end of replayed steps'));
+  const o = s.oracle;
+  let hit: string | null = null;
+  if (o.type === 'http_status') {
+    const r = signals.find((x) => (x.kind === 'http_5xx' || x.kind === 'http_404') && x.status >= o.min && x.status <= o.max
+      && (!o.method || (x.kind === 'http_5xx' ? x.method : 'GET') === o.method) && routeMatches(o.route, x.url));
+    if (r) hit = describeSignal(r);
+  } else if (o.type === 'page_error') {
+    const r = signals.find((x) => x.kind === 'page_error' && (!o.contains || x.message.includes(o.contains)));
+    if (r) hit = describeSignal(r);
+  } else if (o.type === 'markup_rendered') {
+    const r = signals.find((x) => x.kind === 'markup_rendered'); if (r) hit = describeSignal(r);
+  } else if (o.type === 'error_text') {
+    const r = signals.find((x) => x.kind === 'error_text' && x.pattern === o.pattern); if (r) hit = describeSignal(r);
+  } else if (o.type === 'mobile_overflow') {
+    const r = signals.find((x) => x.kind === 'mobile_overflow'); if (r) hit = describeSignal(r);
+  } else {
+    const body = await page.locator('body').innerText().catch(() => '');
+    if (body.includes(o.text)) hit = `"${o.text}" is still visible at ${new URL(page.url()).pathname}`;
+  }
+  return {
+    outcome: hit ? 'failed' : 'passed',
+    observed: hit ? `Reproduced in a fresh session: ${hit}.` : `Not reproduced in a fresh session after ${s.steps.length} step(s).`,
+    details: { oracle: o, steps: s.steps.length, signals: signals.map(describeSignal).slice(0, 10) },
+    screenshots,
+  };
 }
 
 /** A valid neighbouring case that must keep working (the control for a form_rule finding). */

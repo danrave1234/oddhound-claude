@@ -35,11 +35,46 @@ function reproduction(s: Scenario): string[] {
   } else if (s.kind === 'cross_account_read') {
     steps.push(`As that account, create a record at \`${s.create.path}\` and open it from \`${s.listPath}\`.`);
     steps.push('Sign up a second, unrelated account and open the same record URL.');
-  } else {
+  } else if (s.kind === 'mobile_reachability') {
     steps.push(`On a 390x844 phone screen, open \`${s.path}\` and try to press "${s.control}" at every scroll position.`);
+  } else {
+    steps.push(`Open \`${s.start}\` on a ${s.device === 'mobile' ? '390x844 phone' : 'desktop'} screen.`);
+    for (const st of s.steps) steps.push(traceStepText(st));
+    steps.push(`Check: ${oracleText(s.oracle)}.`);
   }
   return steps;
 }
+
+function traceStepText(st: Extract<Scenario, { kind: 'trace' }>['steps'][number]): string {
+  switch (st.op) {
+    case 'goto': return `Open \`${st.path}\`.`;
+    case 'back': return 'Press the browser Back button.';
+    case 'press': return `Press ${st.key}.`;
+    case 'fill': return `Type ${JSON.stringify(st.value)} into "${st.field}".`;
+    case 'select': return `Choose ${JSON.stringify(st.value)} in "${st.field}".`;
+    case 'click': return `Click the ${st.role === 'other' ? 'element' : st.role} "${st.target}".`;
+  }
+}
+
+export function oracleText(o: Extract<Scenario, { kind: 'trace' }>['oracle']): string {
+  switch (o.type) {
+    case 'http_status': return `${o.method ?? 'a'} request to \`${o.route}\` answers HTTP ${o.min === o.max ? o.min : `${o.min}-${o.max}`}`;
+    case 'page_error': return `the page throws an uncaught JavaScript error${o.contains ? ` containing "${o.contains}"` : ''}`;
+    case 'markup_rendered': return 'the typed text `<i data-oh-probe="1">OHPROBE</i>` appears as an italic element instead of literal text';
+    case 'error_text': return `the page shows internal error details (${o.pattern.replace(/_/g, ' ')})`;
+    case 'mobile_overflow': return 'the page is wider than the 390px screen and scrolls sideways';
+    case 'text_present': return `"${o.text}" is still visible`;
+  }
+}
+
+const TRACE_GUIDANCE: Record<string, string> = {
+  http_status: '- Likely area: the server handler for that route fails on this input or sequence; check its input handling and error paths. A 5xx should become a validation message or a handled error.',
+  page_error: '- Likely area: client code that assumes data is present or well-formed; guard the failing code path and handle the error state.',
+  markup_rendered: '- Likely area: user text inserted into the page as HTML (for example innerHTML or dangerouslySetInnerHTML). Render it as text or sanitize it; this is the entry point for cross-site scripting.',
+  error_text: '- Likely area: error handling that returns internal exception text to users. Log details on the server and show a generic message.',
+  mobile_overflow: '- Likely area: an element with a fixed width or unwrapped content wider than the screen.',
+  text_present: '- Likely area: data or pages still served after the state should have changed (for example after sign-out, check that the session is invalidated on the server and cached pages are not shown).',
+};
 
 export function fixBriefMarkdown(b: BriefInput): string {
   const f = b.finding;
@@ -70,6 +105,7 @@ export function fixBriefMarkdown(b: BriefInput): string {
   if (b.scenario?.assertion.kind === 'form_rule') lines.push('- Likely area: server-side validation for this form. Client-side attributes (min/max/required) are not enough on their own.');
   if (b.scenario?.assertion.kind === 'cross_account_read') lines.push('- Likely area: the record lookup does not check that the record belongs to the signed-in user (object-level authorization).');
   if (b.scenario?.assertion.kind === 'mobile_reachability') lines.push('- Likely area: a fixed or overlaying element on narrow screens; reserve space for it or let users dismiss it.');
+  if (b.scenario?.assertion.kind === 'trace') lines.push(TRACE_GUIDANCE[b.scenario.assertion.oracle.type] ?? '- Likely area: the handler for the last step above.');
   if (b.docs) { lines.push(`- Relevant documentation (${b.docs.library}, retrieved via Context7):`); lines.push('```text'); lines.push(fenceUntrusted(b.docs.excerpt)); lines.push('```'); }
   else lines.push('- No version-specific documentation was attached (stack not declared or documentation unavailable).');
   lines.push('');

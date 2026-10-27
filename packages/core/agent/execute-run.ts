@@ -6,7 +6,8 @@
 
 import type { Db } from '../db/pool.ts';
 import { LIMITS } from '../contracts/limits.ts';
-import { RunContractSchema, pathHasDeniedKeyword, type RunContract } from '../contracts/contract.ts';
+import { RunContractSchema, pathHasDeniedKeyword, BASELINE_IMPACT, BASELINE_RULES, type RunContract } from '../contracts/contract.ts';
+import { describeSignal, signalKey, type Signal } from '../browser/sentinels.ts';
 import type { RunStatus } from '../contracts/status.ts';
 import { appendEvent, assertLease, claimRun, FencedError, setRunStatus, refundIfNeverStarted } from '../ledger/runs.ts';
 import { reserveSpend, settleSpend, releaseSpend, markSpendUnknown } from '../ledger/spend.ts';
@@ -21,10 +22,10 @@ import { verifyOwnership, type VerificationMethod } from '../verification/owners
 import { ProviderError, type ChatMessage, type ChatProvider, type ToolCall } from '../providers/types.ts';
 import { priceFor, inputTokenBound, reservationMicros, actualMicros } from '../providers/pricing.ts';
 import { RunSession, SiteUnreachable } from './session.ts';
-import { TOOL_DEFINITIONS, ToolArgs, BROWSER_TOOLS, boundaryValues, type ToolName } from './tools.ts';
+import { TOOL_DEFINITIONS, ToolArgs, BROWSER_TOOLS, boundaryValues, type Charter, type ToolName } from './tools.ts';
 import { systemPrompt } from './prompt.ts';
 import { runHandoff, HandoffEnded } from './handoff.ts';
-import { controlFor, newReplaySessions, replayScenario, scenarioDefect, scenarioHash, type AuthRecipe, type ReplayEnv, type Scenario } from '../verifier/scenario.ts';
+import { controlFor, newReplaySessions, replayScenario, scenarioDefect, scenarioHash, type AuthRecipe, type Oracle, type ReplayEnv, type Scenario, type TraceStep } from '../verifier/scenario.ts';
 
 export type ExecuteDeps = {
   db: Db;
@@ -40,7 +41,15 @@ export type ExecuteDeps = {
 type Candidate = {
   title: string; ruleId: string; impact: 'high' | 'medium' | 'low'; observed: string;
   scenario: Scenario; controlValues?: Record<string, string>; actor: string; device: string;
+  /** 'detector' = raised by Oddhound's own sentinels; 'agent' = reported by the model. */
+  source?: 'detector' | 'agent';
 };
+
+/** One ledgered browser action converted to a replayable step (recorded by Oddhound, not the model). */
+type StepRecord = { seq: number; ctx: string; device: 'desktop' | 'mobile'; actor: string; urlBefore: string; step: TraceStep | null };
+
+/** At most this many automatic (detector) candidates per run, so verification fits in the run's time. */
+const MAX_DETECTOR_CANDIDATES = 10;
 
 type RunRow = {
   id: string; project_id: string | null; mode: string; origin: string; contract: unknown; spend_account: 'public' | 'judging' | 'development';
@@ -233,12 +242,119 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
     { role: 'system', content: systemPrompt(contract) },
     { role: 'user', content: `Begin. You are actor A on desktop, on ${contract.target.origin}/. Start with observe.` },
   ];
+
+  /** Oddhound's own record of the run so far, used when the conversation is compacted. */
+  const notebook = () => {
+    const pages = [...recorded.controlsByPath.keys()].slice(0, 40).map((p) => {
+      const fields = [...(recorded.labelsByPath.get(p) ?? [])].slice(0, 10);
+      return `- ${p}${fields.length ? ` (fields: ${fields.join(', ')})` : ''}`;
+    });
+    const charters = [...plan.values()].map((c) => `- ${c.id} [${c.risk}, ${c.status}] ${c.area}: ${c.technique}${c.note ? ` (${c.note})` : ''}`);
+    const found = candidates.map((c) => `- ${c.ruleId} ${c.title} (${c.source ?? 'agent'})`);
+    const ids = identities.map((i) => `- ${i.email} name="${i.name}" credential_ref=${i.ref}`);
+    const last = session.lastObservation ? formatObservation(session.lastObservation) : 'No page observed yet.';
+    return [
+      'NOTEBOOK (kept by Oddhound; the earlier conversation was compacted to save cost)',
+      `Budget: turn ${turns}/${LIMITS.modelTurnsPerRun}, action ${actions}/${LIMITS.browserActionsPerRun}. Last action #${seq}. You are actor ${session.actor} on ${session.device}.`,
+      recorded.auth ? `Sign-up recipe that worked: ${recorded.auth.kind === 'handoff' ? 'owner handoff session' : `${recorded.auth.path} -> "${recorded.auth.successText}"`}` : 'No sign-up recorded yet.',
+      `Synthetic identities:\n${ids.join('\n') || '- none'}`,
+      `Pages seen:\n${pages.join('\n') || '- none'}`,
+      `Test plan:\n${charters.join('\n') || '- none yet: call plan_tests'}`,
+      `Findings recorded so far:\n${found.join('\n') || '- none'}`,
+      `Current page (element refs are valid for your next call):\n${last}`,
+      'Continue with the next open charter.',
+    ].join('\n\n');
+  };
   const toolsJson = JSON.stringify(TOOL_DEFINITIONS);
   const identities: { ref: string; name: string; email: string }[] = [];
   const secrets = new Set<string>();
   let turns = 0, actions = 0, lastActionAt = 0, nudges = 0, seq = 0;
   let previousState: string | null = null;
   let finished: string | undefined;
+  const stepLog: StepRecord[] = [];
+  let quietSteps = false; // true while do_steps runs: intermediate steps return one line, not a page
+  const seenSignals = new Set<string>();
+  const plan = new Map<string, Charter>();
+  let finishRefusals = 0;
+  let detectorCandidates = 0;
+  // Leave time at the end for independent verification (replays) before the run's hard expiry.
+  const expiresAt = (await db.query<{ expires_at: Date | null }>('SELECT expires_at FROM runs WHERE id = $1', [runId])).rows[0]?.expires_at?.getTime() ?? Date.now() + LIMITS.runWallClockMs;
+  const verificationReserveMs = () => Math.min(6 * 60_000, 90_000 + candidates.length * 35_000);
+
+  /** Translate the action just executed into a replayable step, using what the model saw (labels, kinds). */
+  const toStep = (tool: ToolName, args: Record<string, any>): TraceStep | null => {
+    const asTemplate = (v: string) => {
+      const ident = identities.find((i) => i.name === v || i.email === v);
+      return ident ? (ident.name === v ? '{name}' : '{email}') : v;
+    };
+    switch (tool) {
+      case 'navigate': return { op: 'goto', path: args.path };
+      case 'go_back': return { op: 'back' };
+      case 'press_key': return { op: 'press', key: args.key };
+      case 'click': {
+        const label = session.labelOf(args.ref); const kind = session.kindOf(args.ref);
+        return label ? { op: 'click', target: label.slice(0, 120), role: kind === 'link' ? 'link' : kind === 'button' ? 'button' : 'other' } : null;
+      }
+      case 'fill': { const label = session.labelOf(args.ref); return label ? { op: 'fill', field: label.slice(0, 80), value: asTemplate(args.value) } : null; }
+      case 'fill_credential': { const label = session.labelOf(args.ref); return label ? { op: 'fill', field: label.slice(0, 80), value: args.field === 'password' ? '{password}' : '{email}' } : null; }
+      case 'select_option': { const label = session.labelOf(args.ref); return label ? { op: 'select', field: label.slice(0, 80), value: args.value } : null; }
+      default: return null;
+    }
+  };
+
+  /** Steps for a trace ending at `toSeq`, starting at `fromSeq` (or at the last navigation before it). */
+  const traceFor = (toSeq: number, fromSeq?: number): { start: string; steps: TraceStep[]; device: 'desktop' | 'mobile'; actor: string; usesPassword: boolean } | string => {
+    const end = stepLog.find((s) => s.seq === toSeq);
+    if (!end) return `Action #${toSeq} is not a recorded browser action.`;
+    let window = stepLog.filter((s) => s.ctx === end.ctx && s.seq <= toSeq && (fromSeq === undefined || s.seq >= fromSeq));
+    if (fromSeq === undefined) {
+      window = window.slice(-10);
+      const lastGoto = window.map((s) => s.step?.op).lastIndexOf('goto');
+      if (lastGoto > 0) window = window.slice(lastGoto);
+    }
+    if (window.length > 14) return 'A trace can cover at most 14 actions; start closer to the problem.';
+    if (window.some((s) => s.step === null)) return 'Some of those actions cannot be replayed (an element without a visible label, or a device/actor switch inside the range).';
+    const first = window[0]!;
+    const steps = window.map((s) => s.step!) as TraceStep[];
+    // A leading goto becomes the start page itself.
+    const start = steps[0]?.op === 'goto' ? (steps.shift() as Extract<TraceStep, { op: 'goto' }>).path : first.urlBefore;
+    return { start, steps, device: first.device, actor: first.actor, usesPassword: steps.some((s) => s.op === 'fill' && s.value === '{password}') };
+  };
+
+  /** Turn new sentinel signals from the last action into verified-on-replay candidates. */
+  const handleSignals = async (tool: ToolName, actionSeq: number, drained: { signals: Signal[]; scopeBlocked: boolean }): Promise<string[]> => {
+    const notes: string[] = [];
+    for (const sig of drained.signals) {
+      // A 404 after the model typed a URL itself is not a broken link on the site.
+      if (sig.kind === 'http_404' && tool === 'navigate') continue;
+      const key = signalKey(sig);
+      if (seenSignals.has(key)) continue;
+      seenSignals.add(key);
+      // A page error right after Oddhound blocked a request may be caused by that block, not by the site.
+      if (sig.kind === 'page_error' && drained.scopeBlocked) {
+        await ev('signal.suppressed', { rule: sig.rule, detail: describeSignal(sig), reason: 'a request was blocked by Oddhound in the same step' });
+        continue;
+      }
+      await ev('signal.detected', { rule: sig.rule, kind: sig.kind, detail: describeSignal(sig), actionSeq });
+      notes.push(`ODDHOUND DETECTED (${sig.rule}): ${describeSignal(sig)}. Recorded automatically for replay; do not report it again. Look for related problems nearby.`);
+      if (detectorCandidates >= MAX_DETECTOR_CANDIDATES) continue;
+      const t = traceFor(actionSeq);
+      if (typeof t === 'string') { await ev('signal.not_replayable', { rule: sig.rule, reason: t }); continue; }
+      const oracle: Oracle = sig.kind === 'http_5xx' ? { type: 'http_status', min: 500, max: 599, method: sig.method, route: sig.route }
+        : sig.kind === 'http_404' ? { type: 'http_status', min: 404, max: 404, method: 'GET', route: sig.route }
+        : sig.kind === 'page_error' ? { type: 'page_error', contains: sig.message.slice(0, 60) }
+        : sig.kind === 'markup_rendered' ? { type: 'markup_rendered' }
+        : sig.kind === 'error_text' ? { type: 'error_text', pattern: sig.pattern }
+        : { type: 'mobile_overflow' };
+      const auth = recorded.auth && !t.usesPassword ? recorded.auth : undefined;
+      const scenario: Scenario = { kind: 'trace', device: t.device, ...(auth ? { auth } : {}), start: t.start, steps: t.steps, oracle };
+      const rule = BASELINE_RULES.find((r) => r.id === sig.rule)!;
+      candidates.push({ title: titleForSignal(sig), ruleId: sig.rule, impact: BASELINE_IMPACT[sig.rule] ?? 'medium', observed: describeSignal(sig), scenario, actor: t.actor, device: t.device, source: 'detector' });
+      detectorCandidates++;
+      await ev('finding.candidate', { title: titleForSignal(sig), ruleId: rule.id, kind: 'trace', source: 'detector' });
+    }
+    return notes;
+  };
 
   const recordState = async (o: Observation, label: string, actionId: string | null) => {
     const path = new URL(o.url).pathname;
@@ -263,7 +379,7 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
     previousState = stateId;
   };
 
-  const runBrowserAction = async (tool: ToolName, args: Record<string, unknown>, describe: string, fn: () => Promise<void>): Promise<string> => {
+  const runBrowserAction = async (tool: ToolName, args: Record<string, any>, describe: string, fn: () => Promise<void>, opts: { quiet?: boolean } = {}): Promise<string> => {
     if (actions >= LIMITS.browserActionsPerRun) throw new LimitReached('limit_actions');
     const wait = LIMITS.minActionIntervalMs - (Date.now() - lastActionAt);
     if (wait > 0) await sleep(wait);
@@ -277,17 +393,31 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
     await db.query(`UPDATE actions SET state = 'dispatched' WHERE id = $1`, [actionId]);
     await ev('action.started', { actionId, seq, tool, description: describe, actor: session.actor, device: session.device });
     actions++; lastActionAt = Date.now();
+    const mySeq = seq;
+    const step = toStep(tool, args);
+    const urlBeforePath = (() => { try { const u = new URL(page.url()); return `${u.pathname}${u.search}`; } catch { return '/'; } })();
     let error: string | null = null;
     try { await fn(); } catch (e) { error = (e as Error).message.split('\n')[0]!.slice(0, 240); }
+    stepLog.push({ seq: mySeq, ctx: `${session.actor}:${session.device}`, device: session.device, actor: session.actor, urlBefore: urlBeforePath, step: error ? null : step });
     const left = await session.enforceMainFrameOrigin();
     if (left) await ev('scope.denied', { url: redactUrl(left), reason: 'main_frame_left_verified_origin', recovered: true });
     const after = (await session.page()).url();
     await db.query(`UPDATE actions SET state = $2, result = $3, url_after = $4, completed_at = now() WHERE id = $1`,
       [actionId, error ? 'failed' : 'succeeded', JSON.stringify({ error }), redactUrl(after)]);
-    await ev('action.finished', { actionId, seq, tool, description: describe, ok: !error, error, url: redactUrl(after) });
+    await ev('action.finished', { actionId, seq: mySeq, tool, description: describe, ok: !error, error, url: redactUrl(after) });
+    const notes = await handleSignals(tool, mySeq, await session.drainSignals());
     const o = await session.observe();
     await recordState(o, describe, actionId);
-    return `${error ? `ACTION FAILED: ${error}\n` : 'OK\n'}${formatObservation(o)}`;
+    const head = `${error ? `#${mySeq} FAILED: ${error}` : `#${mySeq} OK`}${notes.length ? `\n${notes.join('\n')}` : ''}`;
+    if (opts.quiet ?? quietSteps) return head;
+    return `${head}\n${formatObservation(o)}\n${statusLine()}`;
+  };
+
+  /** One line of budget and plan state, appended to each observation so the model can pace itself. */
+  const statusLine = () => {
+    const open = [...plan.values()].filter((c) => c.status === 'not_run' || c.status === 'testing');
+    const urgent = open.filter((c) => c.risk === 'critical' || c.risk === 'high').length;
+    return `[budget: turn ${turns}/${LIMITS.modelTurnsPerRun}, action ${actions}/${LIMITS.browserActionsPerRun}; plan: ${plan.size ? `${plan.size - open.length}/${plan.size} charters done, ${urgent} critical/high open` : 'none yet - call plan_tests after recon'}; findings so far: ${candidates.length}]`;
   };
 
   const dispatch = async (call: ToolCall): Promise<{ text: string; image?: Buffer }> => {
@@ -326,8 +456,45 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
         await ev('workflow.updated', { name: args.name, status: args.status, summary: args.summary });
         return { text: 'Workflow updated.' };
       }
+      case 'plan_tests': {
+        for (const c of args.charters as Charter[]) plan.set(c.id, { ...plan.get(c.id), ...c });
+        const all = [...plan.values()];
+        await ev('plan.updated', {
+          charters: all.map((c) => ({ id: c.id, area: c.area, risk: c.risk, technique: c.technique, status: c.status, note: c.note ?? null })),
+        });
+        return { text: `Plan has ${all.length} charter(s): ${all.map((c) => `${c.id} ${c.risk} ${c.status}`).join(', ')}.` };
+      }
+      case 'do_steps': {
+        const lines: string[] = [];
+        quietSteps = true;
+        try {
+          for (const [i, st] of (args.steps as { tool: ToolName }[]).entries()) {
+            const { tool, ...rest } = st as { tool: ToolName } & Record<string, unknown>;
+            const out = await dispatch({ id: `${call.id}:${i}`, type: 'function', function: { name: tool, arguments: JSON.stringify(rest) } } as ToolCall);
+            lines.push(`step ${i + 1} ${tool}: ${out.text.split('\n').join(' | ').slice(0, 400)}`);
+            if (/FAILED|not |Invalid|denied|Unknown|no longer/i.test(out.text.split('\n')[0] ?? '')) { lines.push(`Stopped after step ${i + 1}.`); break; }
+          }
+        } finally { quietSteps = false; }
+        await assertLease(db, runId, generation);
+        const o = await session.observe();
+        await recordState(o, 'do_steps', null);
+        return { text: `${lines.join('\n')}\n${formatObservation(o)}\n${statusLine()}` };
+      }
       case 'report_candidate': {
-        const known = contract.rules.some((r) => r.id === args.rule_id);
+        if (args.scenario.kind === 'trace' && 'steps' in args.scenario) {
+          return { text: 'Do not write trace steps yourself. Give from_seq and to_seq (the #N action numbers) and an oracle; Oddhound builds the steps from its own record.' };
+        }
+        if (args.scenario.kind === 'trace') {
+          const t = traceFor(args.scenario.to_seq, args.scenario.from_seq);
+          if (typeof t === 'string') return { text: `Candidate NOT recorded: ${t}` };
+          const auth = recorded.auth && !t.usesPassword ? recorded.auth : undefined;
+          const scenario: Scenario = { kind: 'trace', device: t.device, ...(auth ? { auth } : {}), start: t.start, steps: t.steps, oracle: args.scenario.oracle };
+          const knownRule = contract.rules.some((r) => r.id === args.rule_id) || BASELINE_RULES.some((r) => r.id === args.rule_id);
+          candidates.push({ title: args.title, ruleId: args.rule_id, impact: args.impact, observed: args.observed, scenario, actor: t.actor, device: t.device, source: 'agent' });
+          await ev('finding.candidate', { title: args.title, ruleId: args.rule_id, kind: 'trace', source: 'agent', steps: t.steps.length });
+          return { text: knownRule ? `Candidate recorded (${t.steps.length} replay steps from ${t.start}). Oddhound will replay it in a fresh session.` : `Recorded as needs-review: "${args.rule_id}" is not an owner or baseline rule.` };
+        }
+        const known = contract.rules.some((r) => r.id === args.rule_id) || BASELINE_RULES.some((r) => r.id === args.rule_id);
         // Ground the scenario in what Oddhound actually observed, then reject anything still unknown,
         // telling the model the real labels so it can correct the report in its next turn.
         const grounded = groundCandidate({ title: args.title, ruleId: args.rule_id, impact: args.impact, observed: args.observed, scenario: args.scenario, controlValues: args.control_values, actor: session.actor, device: session.device }, recorded);
@@ -336,13 +503,22 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
           await ev('finding.candidate_rejected', { title: args.title, problems });
           return { text: `Candidate NOT recorded. Fix and call report_candidate again:\n- ${problems.join('\n- ')}` };
         }
-        candidates.push(grounded);
-        await ev('finding.candidate', { title: args.title, ruleId: args.rule_id, kind: args.scenario.kind, knownRule: known });
-        return { text: known ? 'Candidate recorded. Oddhound will replay it independently after exploration.' : `Recorded as needs-review: "${args.rule_id}" is not one of the owner rules, so it cannot be verified against a rule.` };
+        candidates.push({ ...grounded, source: 'agent' });
+        await ev('finding.candidate', { title: args.title, ruleId: args.rule_id, kind: args.scenario.kind, knownRule: known, source: 'agent' });
+        return { text: known ? 'Candidate recorded. Oddhound will replay it independently after exploration.' : `Recorded as needs-review: "${args.rule_id}" is not an owner or baseline rule, so it cannot be verified against a rule.` };
       }
-      case 'finish_run':
+      case 'finish_run': {
+        // A tester does not stop while high-risk charters are untested and budget remains.
+        const open = [...plan.values()].filter((c) => (c.status === 'not_run' || c.status === 'testing') && (c.risk === 'critical' || c.risk === 'high'));
+        const budgetLeft = turns < LIMITS.modelTurnsPerRun - 8 && actions < LIMITS.browserActionsPerRun - 30 && Date.now() < expiresAt - verificationReserveMs() - 60_000;
+        if (open.length && budgetLeft && finishRefusals < 2) {
+          finishRefusals++;
+          await ev('finish.refused', { open: open.map((c) => c.id) });
+          return { text: `Not yet: ${open.length} critical/high charter(s) are untested (${open.map((c) => `${c.id} ${c.area}`).join('; ')}) and budget remains. Test them, or mark them blocked with a reason via plan_tests.` };
+        }
         finished = args.summary;
         return { text: 'Finishing.' };
+      }
     }
 
     if (!BROWSER_TOOLS.has(name)) return { text: 'Tool not available.' };
@@ -474,8 +650,19 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
   try {
     while (!finished) {
       if (turns >= LIMITS.modelTurnsPerRun) return { stopReason: 'limit_turns' };
+      // Keep enough time for the independent replays of what was found.
+      if (Date.now() > expiresAt - verificationReserveMs()) {
+        await ev('run.time_reserved', { reason: 'exploration stopped to leave time for verification', candidates: candidates.length });
+        return { stopReason: 'time_reserved_for_verification' };
+      }
       await assertLease(db, runId, generation);
-      compactHistory(messages);
+      // History is append-only so the provider's prompt cache keeps hitting (cached input costs ~8x
+      // less). When it grows large, it is replaced once by a compact notebook built by Oddhound.
+      if (inputTokenBound(messages, toolsJson) > NOTEBOOK_THRESHOLD_TOKENS) {
+        const fresh = notebookMessages(contract, notebook());
+        messages.splice(0, messages.length, ...fresh);
+        await ev('model.context_rebased', { turn: turns });
+      }
       const bound = inputTokenBound(messages, toolsJson);
       const reserve = reservationMicros(price, bound, LIMITS.maxOutputTokens);
       const requestKey = `${runId}:turn:${turns}`;
@@ -513,7 +700,7 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
       if (result.finishReason === 'length') await ev('model.truncated', { turn: turns, usage: result.usage });
       if (!calls.length) {
         if (++nudges > 2) return { stopReason: 'model_stopped_without_tools' };
-        messages.push({ role: 'user', content: 'Continue by calling a tool, or call finish_run if the goals are covered.' });
+        messages.push({ role: 'user', content: 'Continue by calling a tool: work on the next open charter in your test plan, or call finish_run if the plan is done.' });
         continue;
       }
       const images: Buffer[] = [];
@@ -551,19 +738,23 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
 
 class LimitReached extends Error { readonly reason: string; constructor(reason: string) { super(reason); this.reason = reason; } }
 
-/** Keep the conversation compact: older page observations are replaced by a one-line stub. */
-function compactHistory(messages: ChatMessage[]): void {
-  const toolIdx = messages.map((m, i) => (m.role === 'tool' ? i : -1)).filter((i) => i >= 0);
-  for (const i of toolIdx.slice(0, -4)) {
-    const m = messages[i] as { role: 'tool'; content: string; tool_call_id: string };
-    if (m.content.length > 300 && m.content.includes('PAGE v')) {
-      const first = m.content.split('\n').find((l) => l.startsWith('PAGE v')) ?? '';
-      m.content = `[older observation omitted] ${first}`;
-    }
+/** Above this many input tokens the conversation is replaced by Oddhound's notebook. */
+const NOTEBOOK_THRESHOLD_TOKENS = 22_000;
+
+/** A fresh conversation: the same system prompt (still cached) plus the notebook. */
+function notebookMessages(contract: RunContract, notebook: string): ChatMessage[] {
+  return [{ role: 'system', content: systemPrompt(contract) }, { role: 'user', content: notebook }];
+}
+
+function titleForSignal(s: Signal): string {
+  switch (s.kind) {
+    case 'http_5xx': return `Server error (HTTP ${s.status}) on ${s.method} ${s.route}`;
+    case 'page_error': return `Uncaught JavaScript error: ${s.message.slice(0, 80)}`;
+    case 'markup_rendered': return `Typed HTML is rendered as markup on ${s.path.split('?')[0]}`;
+    case 'error_text': return `Internal error details shown on ${s.path.split('?')[0]}`;
+    case 'mobile_overflow': return `Page scrolls sideways on a phone: ${s.path.split('?')[0]}`;
+    case 'http_404': return `Broken link: ${s.route} does not exist`;
   }
-  // Older screenshots are dropped entirely (they are stored as artifacts).
-  const userImgs = messages.map((m, i) => (m.role === 'user' && Array.isArray(m.content) ? i : -1)).filter((i) => i >= 0);
-  for (const i of userImgs.slice(0, -1)) messages[i] = { role: 'user', content: '[older screenshot omitted]' };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -639,6 +830,7 @@ function replayEnvFor(db: Db, runId: string, browser: ProvisionedBrowser, contra
     identity: () => syntheticIdentity(runId, 100 + ++n, contract.registration.emailDomain),
     onIdentityCreated: (role) => { void ev('identity.created', { role, phase: 'verification' }); },
     handoffState,
+    inScope: (o) => o === policy.primaryOrigin || policy.apiOrigins.has(o),
   };
 }
 
@@ -660,12 +852,15 @@ async function verifyCandidates(v: { db: Db; runId: string; generation: number; 
   const { db, runId, run, contract, candidates, browser, ev } = v;
   const env = replayEnvFor(db, runId, browser, contract, contract.target.origin, ev, v.handoffState);
   const seen = new Set<string>();
-  for (const c of candidates) {
+  // Most serious first, so the important ones are verified even if time runs short.
+  const rank = { high: 0, medium: 1, low: 2 } as const;
+  const ordered = [...candidates].sort((a, b) => rank[a.impact] - rank[b.impact]);
+  for (const c of ordered) {
     const hash = scenarioHash(c.scenario);
     if (seen.has(hash)) continue;
     seen.add(hash);
     await assertLease(db, runId, v.generation);
-    const rule = contract.rules.find((r) => r.id === c.ruleId);
+    const rule = contract.rules.find((r) => r.id === c.ruleId) ?? BASELINE_RULES.find((r) => r.id === c.ruleId);
     const fingerprint = `${c.ruleId}|${c.scenario.kind}|${hash.slice(0, 16)}`;
     if (!rule) {
       await db.query(`INSERT INTO findings (project_id, run_id, title, category, verification, impact, confidence, rule_id, rule_source, expected, observed, device, actor, limitations, fingerprint)
@@ -709,7 +904,7 @@ async function verifyCandidates(v: { db: Db; runId: string; generation: number; 
     const f = await db.query<{ id: string }>(`INSERT INTO findings (project_id, run_id, scenario_id, control_scenario_id, title, category, verification, lifecycle, impact, confidence, rule_id, rule_source, expected, observed, device, actor, limitations, fingerprint, evidence_ids)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id`,
       [run.project_id, runId, scenarioId, controlScenarioId, c.title, category, verification, verification === 'verified' ? 'open' : null, c.impact,
-        verification === 'verified' ? 'reproduced 2/2' : 'low', c.ruleId, `${rule.source === 'owner' ? 'Owner rule' : 'Demo target rule'} ${rule.id}`,
+        verification === 'verified' ? 'reproduced 2/2' : 'low', c.ruleId, `${rule.source === 'owner' ? 'Owner rule' : rule.source === 'baseline' ? 'Oddhound baseline rule' : 'Demo target rule'} ${rule.id}`,
         rule.text, observed, c.scenario.device, c.actor, limitations, fingerprint, evidence]);
     await ev(verification === 'verified' ? 'finding.verified' : verification === 'dismissed' ? 'finding.dismissed' : 'finding.inconclusive',
       { findingId: f.rows[0]!.id, title: c.title, ruleId: c.ruleId, outcomes });

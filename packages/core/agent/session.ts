@@ -5,6 +5,7 @@ import type { Browser, BrowserContext, Page, Response } from 'playwright';
 import { newScopedContext } from '../browser/runtime.ts';
 import { attachScope, type ScopeDecision, type ScopePolicy } from '../browser/scope.ts';
 import { observe, type Observation } from '../browser/snapshot.ts';
+import { attachSentinels, checkPage, type Signal } from '../browser/sentinels.ts';
 import type { DeviceProfileName } from '../contracts/limits.ts';
 
 export type Actor = 'A' | 'B';
@@ -47,6 +48,26 @@ export class RunSession {
   get device() { return this.#device; }
   get origin() { return this.#policy.primaryOrigin; }
 
+  /** The verified site and verified API hosts: failures there are the site's own. */
+  inScope(origin: string): boolean { return origin === this.#policy.primaryOrigin || this.#policy.apiOrigins.has(origin); }
+
+  // Sentinel signals and scope blocks since the last drain (one action's window).
+  #signals: Signal[] = [];
+  #scopeBlocks = 0;
+  /** Signals raised since the last call, plus whether Oddhound blocked any request in that window. */
+  async drainSignals(): Promise<{ signals: Signal[]; scopeBlocked: boolean }> {
+    const page = await this.page();
+    this.#signals.push(...await checkPage(page, this.#device === 'mobile'));
+    const out = { signals: this.#signals, scopeBlocked: this.#scopeBlocks > 0 };
+    this.#signals = []; this.#scopeBlocks = 0;
+    return out;
+  }
+
+  /** The element kind of a ref in the observation the model acted on. */
+  kindOf(ref: string): string | null {
+    return (this.#turnObservation ?? this.lastObservation)?.elements.find((e) => e.ref === ref)?.kind ?? null;
+  }
+
   /** Owner sign-in handoff: relaxes scope for owner-driven sign-in only (see scope.ts). */
   setHandoff(active: boolean) { this.#policy.handoffActive = active; }
   get handoffActive() { return this.#policy.handoffActive; }
@@ -65,9 +86,10 @@ export class RunSession {
       const other = this.#contexts.get(`${this.#actor}:${this.#device === 'desktop' ? 'mobile' : 'desktop'}`);
       const state = other ? await other.ctx.storageState() : undefined;
       const ctx = await newScopedContext(this.#browser, this.#device, state);
-      await attachScope(ctx, this.#policy, this.#onScope);
+      await attachScope(ctx, this.#policy, (d) => { if (!d.allowed) this.#scopeBlocks++; this.#onScope(d); });
       ctx.on('response', (r) => { void this.#recordResponse(r); });
       const page = await ctx.newPage();
+      attachSentinels(page, (o) => this.inScope(o), (s) => { this.#signals.push(s); });
       page.setDefaultTimeout(10_000);
       // Real sites (especially previews that scale to zero) can take well over 10 s on a cold start.
       page.setDefaultNavigationTimeout(30_000);

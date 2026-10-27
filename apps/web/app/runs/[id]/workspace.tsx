@@ -15,7 +15,38 @@ type Snapshot = {
   latestScreenshot: { id: string; label: string; created_at: string } | null;
   spend: { settled: number; outstanding: number };
   retests: { id: string; status: string; created_at: string }[];
+  plan?: { id: string; area: string; risk: string; technique: string; status: string; note: string | null }[];
+  detectedSignals?: number;
 };
+
+const RISK_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+
+/** The agent's own risk-ranked test plan, as it last saved it. */
+function TestPlan({ plan, active }: { plan: NonNullable<Snapshot['plan']>; active: boolean }) {
+  const sorted = [...plan].sort((a, b) => (RISK_ORDER[a.risk] ?? 9) - (RISK_ORDER[b.risk] ?? 9));
+  const done = plan.filter((c) => c.status === 'completed').length;
+  return (
+    <div className="card fade-in">
+      <div className="card-header">
+        <h2 className="h3"><Icon name="workflow" /> Test plan</h2>
+        <span className="muted" style={{ fontSize: 12.5 }}>Written and prioritised by the agent</span>
+        <span className="muted tabular" style={{ marginLeft: 'auto', fontSize: 12.5 }}>{done}/{plan.length} completed</span>
+      </div>
+      {plan.length ? (
+        <div className="table-wrap"><table className="grid"><thead><tr><th>Risk</th><th>Area</th><th className="hide-sm">What it tests</th><th>Status</th></tr></thead><tbody>
+          {sorted.map((c) => (
+            <tr key={c.id}>
+              <td><span className={`chip risk-${c.risk}`}>{c.risk}</span></td>
+              <td style={{ fontWeight: 550 }}>{c.area}</td>
+              <td className="muted hide-sm">{c.technique}{c.note ? <><br /><span style={{ fontSize: 12.5 }}>{c.note}</span></> : null}</td>
+              <td><StatusBadge value={c.status} /></td>
+            </tr>
+          ))}
+        </tbody></table></div>
+      ) : <Empty icon="paw" text={active ? 'Mapping the site before writing a test plan…' : 'No test plan was written in this run.'} />}
+    </div>
+  );
+}
 
 const ACTIVE = new Set(['queued', 'provisioning', 'running', 'waiting_for_input', 'stopping', 'finalizing']);
 const GROUPS: { key: string; label: string }[] = [
@@ -29,7 +60,7 @@ function describe(e: Snapshot['events'][number]): string | null {
     case 'action.finished': return `${p.description}${p.ok ? '' : ` — failed: ${p.error}`}`;
     case 'state.discovered': return `Reached ${p.route} (“${p.title}”) as actor ${p.actor} on ${p.device}`;
     case 'workflow.updated': return `Workflow “${p.name}”: ${statusLabel(p.status)} — ${p.summary}`;
-    case 'finding.candidate': return `Candidate reported against ${p.ruleId}: ${p.title}`;
+    case 'finding.candidate': return p.source === 'detector' ? `Recorded for replay (${p.ruleId}): ${p.title}` : `Candidate reported against ${p.ruleId}: ${p.title}`;
     case 'finding.verifying': return `Replaying candidate independently: ${p.title}`;
     case 'finding.verified': return `Verified (${(p.outcomes ?? []).length}/${(p.outcomes ?? []).length} replays failed the rule): ${p.title}`;
     case 'finding.dismissed': return `Dismissed — not reproduced: ${p.title}`;
@@ -54,6 +85,16 @@ function describe(e: Snapshot['events'][number]): string | null {
     case 'handoff.cancelled': return 'Owner cancelled the sign-in; run stopped';
     case 'handoff.timed_out': return 'Sign-in time limit reached; run stopped';
     case 'run.phase': return `Phase: ${p.phase}`;
+    case 'plan.updated': {
+      const cs = (p.charters ?? []) as { risk: string; status: string }[];
+      return `Test plan updated: ${cs.length} charter(s), ${cs.filter((c) => c.risk === 'critical' || c.risk === 'high').length} critical/high, ${cs.filter((c) => c.status === 'completed').length} completed`;
+    }
+    case 'signal.detected': return `Oddhound detected (${p.rule}): ${p.detail}`;
+    case 'signal.suppressed': return `Ignored a possible ${p.rule} signal: ${p.reason}`;
+    case 'signal.not_replayable': return `Detected ${p.rule} but could not build a replay (${p.reason})`;
+    case 'finish.refused': return `Agent tried to finish with high-risk charters still open (${(p.open ?? []).join(', ')}); asked to continue`;
+    case 'model.context_rebased': return 'Conversation compacted into Oddhound\'s notebook to save cost';
+    case 'run.time_reserved': return `Exploration stopped to leave time for verifying ${p.candidates} candidate(s)`;
     case 'run.error': return `Error: ${p.message}`;
     case 'model.truncated': return 'Model output hit the token limit';
     case 'provider.error': return `Model provider error (${p.kind})`;
@@ -208,6 +249,7 @@ export function RunWorkspace({ initial, controllable, replay, signedIn }: { init
 
             {view === 'workflows' && (wfMode === 'list' ? (
               <>
+                {(snap.plan?.length || run.mode !== 'retest') && <TestPlan plan={snap.plan ?? []} active={active} />}
                 <div className="card fade-in">
                   <div className="card-header"><h2 className="h3"><Icon name="trail" /> Workflows</h2><span className="muted tabular" style={{ marginLeft: 'auto', fontSize: 12.5 }}>{snap.workflows.length}</span></div>
                   {snap.workflows.length ? (
@@ -308,7 +350,7 @@ export function RunWorkspace({ initial, controllable, replay, signedIn }: { init
 }
 
 function kindOf(type: string): 'bad' | 'ok' | 'warn' | 'accent' | 'plain' {
-  if (['finding.verified', 'run.error', 'provider.error', 'browser.destroy_unconfirmed', 'site.verification_failed', 'site.unreachable', 'budget.denied'].includes(type)) return 'bad';
+  if (['finding.verified', 'run.error', 'provider.error', 'browser.destroy_unconfirmed', 'site.verification_failed', 'site.unreachable', 'budget.denied', 'signal.detected'].includes(type)) return 'bad';
   if (['site.verified', 'browser.ready', 'browser.terminated', 'handoff.completed'].includes(type)) return 'ok';
   if (['finding.candidate', 'finding.inconclusive', 'scope.denied', 'egress.denied', 'handoff.timed_out', 'handoff.cancelled', 'model.truncated'].includes(type)) return 'warn';
   if (['state.discovered', 'workflow.updated', 'handoff.started', 'finding.verifying'].includes(type)) return 'accent';
@@ -331,8 +373,10 @@ function RunDetails({ snap }: { snap: Snapshot }) {
         <dt>Environment</dt><dd>{r.environment} · {r.test_mode === 'active' ? 'active testing' : 'observation only'}</dd>
         <dt>Model spend</dt><dd className="tabular">${(snap.spend.settled / 1e6).toFixed(4)} settled{snap.spend.outstanding ? ` + $${(snap.spend.outstanding / 1e6).toFixed(4)} reserved` : ''}</dd>
       </dl>
-      <section className="section"><h3 className="section-title">Goals</h3>
-        <ol style={{ margin: 0, paddingLeft: 18, display: 'grid', gap: 4, listStyle: 'decimal' }}>{(r.goals ?? []).map((g: string) => <li key={g}>{g}</li>)}</ol></section>
+      <section className="section"><h3 className="section-title">Owner focus areas</h3>
+        {(r.goals ?? []).length
+          ? <ol style={{ margin: 0, paddingLeft: 18, display: 'grid', gap: 4, listStyle: 'decimal' }}>{(r.goals ?? []).map((g: string) => <li key={g}>{g}</li>)}</ol>
+          : <p className="muted" style={{ margin: 0, fontSize: 13 }}>None. The agent set its own priorities by risk.</p>}</section>
       <section className="section"><h3 className="section-title">Rules — findings are judged only against these</h3>
         {(r.rules ?? []).length ? <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'grid', gap: 6 }}>{(r.rules ?? []).map((x: { id: string; text: string }) => <li key={x.id} className="row" style={{ alignItems: 'flex-start', flexWrap: 'nowrap', gap: 8 }}><span className="chip mono">{x.id}</span><span>{x.text}</span></li>)}</ul>
           : <p className="muted">No explicit rules were given.</p>}</section>
