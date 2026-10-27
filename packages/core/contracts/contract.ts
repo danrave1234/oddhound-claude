@@ -87,14 +87,37 @@ export const HANDOFF_DENIED_OPERATIONS = [
 
 /** True when a URL path is blocked by one of the denied keywords. */
 export function pathHasDeniedKeyword(pathname: string, keywords: readonly string[]): string | null {
-  if (!keywords.length) return null;
+  return deniedKeywordsInPath(pathname, keywords)[0] ?? null;
+}
+
+/** Every denied keyword that appears as a path segment or a dash/underscore/dot part of one. */
+export function deniedKeywordsInPath(pathname: string, keywords: readonly string[]): string[] {
+  if (!keywords.length) return [];
   let decoded = pathname;
   try { decoded = decodeURIComponent(pathname); } catch { /* keep raw */ }
+  const found = new Set<string>();
   for (const segment of decoded.toLowerCase().split('/').filter(Boolean)) {
     const parts = new Set([segment, ...segment.split(/[-_.]/).filter(Boolean)]);
-    for (const k of keywords) if (parts.has(k)) return k;
+    for (const k of keywords) if (parts.has(k)) found.add(k);
   }
-  return null;
+  return [...found];
+}
+
+/**
+ * Default keywords whose GET can still have an effect (sign-out links, delete-by-link, payment
+ * redirects, webhook/cron triggers). Background reads that match only the other defaults (for
+ * example GET /subscriptions/my-subscription or /billing/usage) are allowed: they show the page its
+ * own data and change nothing. A keyword the owner adds is not in the defaults and blocks reads too.
+ */
+export const KEYWORDS_BLOCKING_READS = new Set([
+  'logout', 'signout', 'sign-out', 'log-out', 'delete', 'destroy', 'purge', 'refund', 'withdraw', 'transfer', 'redeem',
+  'webhook', 'webhooks', 'cron', 'checkout', 'pay', 'subscribe', 'stripe', 'paymongo', 'paypal',
+]);
+const DEFAULT_KEYWORD_SET = new Set(DEFAULT_DENIED_PATH_KEYWORDS);
+
+/** Whether a background read (GET/HEAD/OPTIONS that is not a top-level navigation) to this path is blocked. */
+export function keywordsBlockRead(matched: readonly string[]): boolean {
+  return matched.some((k) => KEYWORDS_BLOCKING_READS.has(k) || !DEFAULT_KEYWORD_SET.has(k));
 }
 
 /** Whether this contract permits state-changing requests at all. */

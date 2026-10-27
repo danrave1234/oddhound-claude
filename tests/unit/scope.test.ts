@@ -49,11 +49,33 @@ describe('safe default blocks (denied URL words)', () => {
     for (const p of ['/', '/pricing', '/login', '/dashboard', '/dashboard/profile', '/contact', '/payday-tips', '/administrator-guide'])
       expect(pathHasDeniedKeyword(p, kw), p).toBeNull();
   });
-  it('is enforced by the scope policy for every method on the verified origin', () => {
+  it('blocks opening a denied page and every write to one', () => {
     const policy = { ...active, deniedPathKeywords: kw };
     expect(decide(policy, req('https://shop.example/api/paymongo/x', 'POST'))).toMatchObject({ allowed: false, reason: 'denied_path_keyword' });
     expect(decide(policy, req('https://shop.example/admin', 'GET', { isNavigation: true }))).toMatchObject({ allowed: false, reason: 'denied_path_keyword' });
+    expect(decide(policy, req('https://shop.example/subscriptions/my-subscription', 'GET', { isNavigation: true }))).toMatchObject({ allowed: false });
+    expect(decide(policy, req('https://shop.example/subscriptions/cancel', 'POST', { resourceType: 'fetch' }))).toMatchObject({ allowed: false });
     expect(decide(policy, req('https://shop.example/pricing', 'GET', { isNavigation: true }))).toMatchObject({ allowed: true });
+  });
+
+  it('lets the page read its own data from a denied area, unless the word can act through a GET', () => {
+    const api = { ...active, apiOrigins: new Set(['https://api.shop.example']), deniedPathKeywords: kw };
+    const read = (url: string) => decide(api, req(url, 'GET', { resourceType: 'fetch' }));
+    // Reads that change nothing (seen on a real site: the page loads the user's plan and usage).
+    for (const u of ['https://api.shop.example/subscriptions/my-subscription', 'https://api.shop.example/subscriptions/usage/history?days=30',
+      'https://shop.example/billing/invoices', 'https://shop.example/api/admin/flags'])
+      expect(read(u), u).toMatchObject({ allowed: true });
+    // GETs that can act: sign-out links, delete-by-link, payment and webhook/cron triggers.
+    for (const u of ['https://shop.example/logout', 'https://shop.example/notes/1/delete', 'https://api.shop.example/checkout/session',
+      'https://api.shop.example/api/cron/renew', 'https://shop.example/subscribe/pro', 'https://api.shop.example/stripe/portal'])
+      expect(read(u), u).toMatchObject({ allowed: false, reason: 'denied_path_keyword' });
+    // A path that also carries an effectful word stays blocked.
+    expect(read('https://api.shop.example/subscriptions/delete')).toMatchObject({ allowed: false });
+  });
+
+  it('treats a keyword the owner added as blocking reads too', () => {
+    const owner = { ...active, deniedPathKeywords: [...kw, 'export'] };
+    expect(decide(owner, req('https://shop.example/api/export/all', 'GET', { resourceType: 'fetch' }))).toMatchObject({ allowed: false });
   });
 });
 

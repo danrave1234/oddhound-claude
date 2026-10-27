@@ -1,8 +1,9 @@
 // Action-scope enforcement inside a browser context (MVP plan §17 "API and resource scope").
 // The network boundary (egress proxy / smokescreen) decides which IPs may be dialled; this layer
 // decides what the page may *do*: navigate only within the verified UI origin, send state-changing
-// requests only to verified origins and only when the contract permits writes, never touch denied
-// paths, and treat every other origin as a public resource dependency.
+// requests only to verified origins and only when the contract permits writes, never open or write to
+// denied paths (background reads there are allowed unless the word can act through a GET), and treat
+// every other origin as a public resource dependency.
 //
 // Owner sign-in handoff: while the OWNER drives the browser through the live view (the agent cannot
 // act then), sign-in may need other origins (an identity provider, a bot-check service). During that
@@ -15,7 +16,7 @@
 
 import type { BrowserContext, Route, Request } from 'playwright';
 import type { RunContract } from '../contracts/contract.ts';
-import { pathHasDeniedKeyword, writesPermitted } from '../contracts/contract.ts';
+import { deniedKeywordsInPath, keywordsBlockRead, writesPermitted } from '../contracts/contract.ts';
 
 export type ScopeDecision = { allowed: boolean; reason: string; method: string; url: string; resourceType: string };
 
@@ -55,8 +56,14 @@ export function decide(policy: ScopePolicy, req: { url: string; method: string; 
   if ((isPrimary || isApi) && policy.deniedPathPrefixes.some((p) => url.pathname.startsWith(p))) {
     return { ...base, allowed: false, reason: 'denied_path' };
   }
-  if ((isPrimary || isApi) && pathHasDeniedKeyword(url.pathname, policy.deniedPathKeywords)) {
-    return { ...base, allowed: false, reason: 'denied_path_keyword' };
+  if (isPrimary || isApi) {
+    const matched = deniedKeywordsInPath(url.pathname, policy.deniedPathKeywords);
+    // Denied keywords always block opening the page and every write. A background read (the page
+    // fetching its own data) is blocked only when a matched word can act through a GET.
+    const backgroundRead = SAFE_METHODS.has(req.method) && !(req.isNavigation && req.isMainFrame);
+    if (matched.length && (!backgroundRead || keywordsBlockRead(matched))) {
+      return { ...base, allowed: false, reason: 'denied_path_keyword' };
+    }
   }
   if (policy.handoffActive) {
     // Owner-driven sign-in: any public http(s) origin, reads and writes, top-level or framed.
