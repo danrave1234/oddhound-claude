@@ -74,7 +74,11 @@ Drave authorized active production testing ("no one using it"). Not scanned yet.
 | Product change | DNS verification now reads `_oddhound-verify.<host>` (still accepts the bare host), and the UI warns that on auto-managed DNS like Vercel's, any record at or under the host can take the site offline, so use the file or meta method. |
 | Deploy fix | Reverted 9b74bf3 on EstabWeb `main` (it also needs migration 021). `main` now equals live 3c69dc9 plus the verification file; the build succeeded and the file is served. |
 | Scan run 7bf3f18c | `failed` after 11 s: it started during the DNS outage, so the egress proxy could not resolve the host. $0.005 spent; container destroyed and confirmed. |
-| Next | Ownership check with the file method and the active scan. Both are waiting on Drave: the session's safety check blocked the ownership request. |
+| Ownership | Drave approved; verified by the `/.well-known` file at 06:50 UTC and re-checked by the run. |
+| Scan run 241342a0 | **Completed.** Active mode on production (acknowledged), real `muse-spark-1.3`, fresh sandboxed container (destroyed and confirmed). 48 model turns, 34 actions, 17 page states, $0.28. Desktop and 390×844 phone. Payment, domain, AI, cron, publish, redeem and admin routes were blocked by the contract; none were requested. |
+| Verified finding | **R1: the contact form silently does nothing.** Replayed twice with a control, 2/2. EstabWeb's source agrees: the `/contact` form has no submit handler and its inputs have no `name`, so submitting just reloads the page. Caveat: the verifier's "observed" text says "no new record (0 → 0 rows)", which describes persistence rather than the missing confirmation; the wording should be improved. |
+| Not reached | Sign-up and login never got past reCAPTCHA. Oddhound's policy blocks writes to unverified origins, so reCAPTCHA's POSTs to google.com were denied (15 times) and the site answered "bot check failed". So R3 (password errors) was **not really exercised**, no account was created, and the dashboard was not tested. Testing it needs a pre-confirmed test account supplied through the run contract. |
+| Other rules | R2: invalid email rejected by the browser's built-in email check. R4: nav and footer links opened working pages. R5: phone menu opened; pricing and sign-up reachable. No violations reported. |
 
 ## 4. Spec gates (R0–R7) — where this build stands
 
@@ -86,7 +90,7 @@ Drave authorized active production testing ("no one using it"). Not scanned yet.
 | R3 Meta + queue + ledgers | Real Meta loop ✅, BullMQ-on-Postgres locally ✅, atomic spend/admission under races ✅. Hosted Postgres/queue not exercised. |
 | R4 autonomous discovery + verified defect | ✅ on the demo target with the real model (runs 1, 5, 6). |
 | R5 evidence/workspace/tenant + fixed retest | ✅ locally (tenant isolation over HTTP, escaped evidence, fenced briefs, unchanged-assertion retest). |
-| R6 two real verified sites + public demo | ⏳ **1 of 2 real sites done.** `https://www.danravekeh.com` verified by the `/.well-known` file method (token committed to the MyPortfolio repo) and scanned with real Muse Spark in observation-only mode — see §3b. EstabWeb still needs a staging copy (its deployments sit behind Vercel's sign-in, and production has payments, emails, AI calls and domain registration). Public deployment still open. |
+| R6 two real verified sites + public demo | ⏳ **2 real verified sites scanned** with real Muse Spark: `www.danravekeh.com` (observation only, §3b) and `www.estabweb.com` (active on production, 1 verified finding, §3c). Still open: a real account/write workflow (EstabWeb sign-up stops at reCAPTCHA; needs a pre-confirmed test account) and the public deployment. |
 | R7 submission artifacts | ❌ Open (video, deployed URL). |
 
 ## 5. What is NOT done / not verified
@@ -94,7 +98,7 @@ Drave authorized active production testing ("no one using it"). Not scanned yet.
 - **Not deployed.** No Fly token, so neither `oddhound-web` nor `oddhound-browser` runs anywhere public. `infra/fly/*.fly.toml` and `apps/web/Dockerfile` are written but **untested**.
 - **Fly per-run Machines untested** (`packages/core/browser/fly-runtime.ts`).
 - **GitHub sign-in untested** (no OAuth app). Local testing used the dev-only email sign-in, which is disabled when `NODE_ENV=production` (verified: `next start` hides it).
-- **Second real site not scanned yet** (B15). danravekeh.com is verified and scanned; EstabWeb needs a staging copy that is publicly reachable and isolated from production data before it can be verified.
+- **No real-site account workflow yet** (B15). Both real sites are verified and scanned, but neither run created and used an account: the portfolio has none, and EstabWeb's sign-up stops at reCAPTCHA.
 - **Mailbox/OTP sign-ups, external SSO, CAPTCHA/MFA** are not supported; such workflows show as blocked.
 - **axe/Lighthouse/SEO checks, ZAP, CSRF/CORS/framing/XSS probes** — not implemented (P1/P2 in the spec).
 - **Demo video** — not started.
