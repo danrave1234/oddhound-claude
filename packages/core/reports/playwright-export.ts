@@ -2,10 +2,46 @@
 // record (never raw model-generated code). Values are embedded with JSON.stringify only.
 
 import type { Scenario } from '../verifier/scenario.ts';
+import { pathRegexSource } from '../verifier/expect.ts';
 
 const j = (v: unknown) => JSON.stringify(v);
 
 type Trace = Extract<Scenario, { kind: 'trace' }>;
+type Batch = Extract<Scenario, { kind: 'batch' }>;
+type Step = Trace['steps'][number];
+
+function stepLine(st: Step): string {
+  if (st.op === 'goto') return `  await page.goto(new URL(${j(st.path)}, BASE_URL).toString());`;
+  if (st.op === 'back') return '  await page.goBack();';
+  if (st.op === 'press') return `  await page.keyboard.press(${j(st.key === 'Space' ? ' ' : st.key)});`;
+  if (st.op === 'fill') return `  await (await field(page, ${j(st.field)})).fill(fill(${j(st.value)}, vars));`;
+  if (st.op === 'select') return `  await (await field(page, ${j(st.field)})).selectOption(fill(${j(st.value)}, vars));`;
+  if (st.op === 'drag') return `  await page.getByText(${j(st.source)}).first().dragTo(page.getByText(${j(st.target)}).first());`;
+  return `  await ${st.role === 'other' ? `page.getByText(${j(st.target)})` : `page.getByRole(${j(st.role)}, { name: ${j(st.target)} })`}.first().click();`;
+}
+
+/** Batch steps with their expectations as Playwright assertions. Values embedded with JSON.stringify only. */
+function batchBody(s: Batch, signedIn: boolean): string {
+  const lines: string[] = [];
+  if (s.device === 'mobile') lines.push('  await page.setViewportSize({ width: 390, height: 844 });');
+  lines.push(`  const vars = ${signedIn ? '{ ...who, marker }' : '{ ...identity(), marker }'};`);
+  lines.push(`  await page.goto(new URL(${j(s.start)}, BASE_URL).toString());`);
+  lines.push("  const rejection = page.locator('[role=alert], .error, .invalid-feedback, :user-invalid');");
+  s.steps.slice(0, s.oracleStep).forEach((x, i) => {
+    lines.push(`  // Step ${i + 1}${x.expect ? (i + 1 === s.oracleStep ? ' (rule check)' : ' (precondition)') : ''}`);
+    lines.push('  { const before = new URL(page.url()).pathname;');
+    lines.push(stepLine(x.step));
+    lines.push("  await page.waitForLoadState('domcontentloaded').catch(() => {});");
+    const e = x.expect;
+    if (e?.outcome === 'rejected') lines.push('  await expect(rejection.first()).toBeVisible();');
+    if (e?.outcome === 'accepted') lines.push('  await expect(rejection).toHaveCount(0);');
+    if (e?.text_visible) lines.push(`  await expect(page.locator('body')).toContainText(${j(e.text_visible)});`);
+    if (e?.text_absent) lines.push(`  await expect(page.locator('body')).not.toContainText(${j(e.text_absent)});`);
+    if (e?.path) lines.push(`  expect(new URL(page.url()).pathname).toMatch(new RegExp(${j(pathRegexSource(e.path))}));`);
+    lines.push('  void before; }');
+  });
+  return `${lines.join('\n')}\n`;
+}
 
 /** Trace steps and oracle as test code. Every value is embedded with JSON.stringify only. */
 function traceBody(s: Trace, signedIn: boolean): string {
@@ -17,14 +53,7 @@ function traceBody(s: Trace, signedIn: boolean): string {
   lines.push("  page.on('response', (r) => failures.push('status ' + r.status() + ' ' + r.request().method() + ' ' + new URL(r.url()).pathname));");
   lines.push(`  const vars = ${vars};`);
   lines.push(`  await page.goto(new URL(${j(s.start)}, BASE_URL).toString());`);
-  for (const st of s.steps) {
-    if (st.op === 'goto') lines.push(`  await page.goto(new URL(${j(st.path)}, BASE_URL).toString());`);
-    else if (st.op === 'back') lines.push('  await page.goBack();');
-    else if (st.op === 'press') lines.push(`  await page.keyboard.press(${j(st.key === 'Space' ? ' ' : st.key)});`);
-    else if (st.op === 'fill') lines.push(`  await (await field(page, ${j(st.field)})).fill(fill(${j(st.value)}, vars));`);
-    else if (st.op === 'select') lines.push(`  await (await field(page, ${j(st.field)})).selectOption(fill(${j(st.value)}, vars));`);
-    else lines.push(`  await ${st.role === 'other' ? `page.getByText(${j(st.target)})` : `page.getByRole(${j(st.role)}, { name: ${j(st.target)} })`}.first().click();`);
-  }
+  for (const st of s.steps) lines.push(stepLine(st));
   lines.push("  await page.waitForLoadState('networkidle').catch(() => {});");
   const o = s.oracle;
   lines.push('  // Rule: the problem below must not happen.');
@@ -96,6 +125,8 @@ async function submitForm(page: Page, path: string, fields: Record<string, strin
 `;
   } else if (s.kind === 'trace') {
     body = `${auth}${traceBody(s, Boolean(auth))}`;
+  } else if (s.kind === 'batch') {
+    body = `${auth}${batchBody(s, Boolean(auth))}`;
   } else {
     body = `${auth}  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(new URL(${j(s.path)}, BASE_URL).toString());

@@ -23,8 +23,8 @@ This is an honest record of what was built, what was actually tested, and what i
 
 | Suite | Command | Result |
 |---|---|---|
-| Unit + integration (SSRF policy, egress proxy incl. rebinding and byte/request caps, scope decisions, ownership verification against a live server, ledgers under races, fencing, durable events, report fencing, export template, scenario soundness, credential vault) | `npx vitest run` | **70/70 pass** |
-| End-to-end lab, offline test double (deterministic, no paid calls) | `node --env-file=.env tests/e2e/run-e2e.ts` | **15/15 pass** |
+| Unit + integration (SSRF policy, egress proxy incl. rebinding and byte/request caps, scope decisions, ownership verification against a live server, ledgers under races, fencing, durable events, report fencing, export template, scenario soundness, credential vault, detectors, scout, stated rules, scenario batches through the worker pipeline, batch retest) | `pnpm test` | **114/114 pass** (Oct 28) |
+| End-to-end lab, offline test double (deterministic, no paid calls) | `node --env-file=.env tests/e2e/run-e2e.ts` | **all checks pass** (Oct 28, default batch mode) |
 | End-to-end lab, real Meta model | `E2E_PROVIDER=meta node --env-file=.env tests/e2e/run-e2e.ts` | see §3 |
 | HTTP tenant isolation (SELF-04) against the running web app | `node --env-file=.env tests/e2e/web-access.ts` | **13/13 pass** |
 | In-container network self-test (SELF-01/02/08) | `docker exec -u pwuser <run container> node26 /opt/oddhound/netcheck.ts 172.30.77.10 4310` | **10/10 pass** |
@@ -51,6 +51,41 @@ Each run explores the demo target with only its description, goals and five rule
 | 9 | 42 | 33 | $0.15 | ✅ | ✅ | ✅ | ✅ | **All 15/15 e2e checks pass** with the real model: all four verified (2/2 replays + controls), R3 control not flagged, all fixed on retest, none falsely fixed on the unfixed build. |
 
 Each failure mode was caught by the verifier and reported truthfully (inconclusive / not fixed), never as a false success; each one led to a fix in Oddhound itself, not in the demo target. Total Meta spend for all development runs and smoke tests: **about $1.56** of the $150 credit.
+
+## 3c. Scout, scenario batches and surprise-driven inference (R4, October 28, 2026)
+
+Implements MVP §7 "Scout, scenario batches and surprise-driven inference" and §8 item 7 (branch `scout-batches`).
+
+| Part | What it does | Tested by |
+|---|---|---|
+| **Scout** (no model) | After every action `snapshot.ts` lists links, buttons, fields, ARIA widgets (tab, menuitem, switch, slider, option, combobox…), editable regions, draggable items and pointer-only click targets, with disabled/checked state and owning region. It also records the rules the page states about itself: `required`, `min`/`max`, `step`, `minlength`/`maxlength`, `pattern`, input `type`, `novalidate` forms, fields the browser marks invalid, and limits written in the page text ("up to 8 guests"). | `tests/integration/scout.test.ts` (real Chromium), `tests/unit/scout-batch.test.ts` |
+| **Hunter** (Meta model) | `run_scenario_batch`: up to 15 steps toward one goal, each with an optional expectation (`outcome` accepted/rejected, `text_visible`, `text_absent`, `path`). `drag` tool; arrow/Home/End keys for sliders and tabs. Fill values can be boundary templates (`{past:max}`, `{on:maxlength}`, `{blank}`…) that Oddhound computes from the field's stated rule. | unit + `tests/integration/batch-runner.test.ts` |
+| **Runner** (no model) | Each step goes through the same dispatch as a single action: validation, scope policy, 1 action/s, action ledger, detectors. It returns to the model only on a surprise: failed or undecidable expectation, stale element, new page state without an expectation, detector signal, dialog, blocked request to the site itself, or budget threshold. A stale ref is re-found only by an exact, unique kind+label match. Blocked third-party writes (analytics beacons, injected scripts) are enforced and logged, but are not surprises. | `batch-runner.test.ts` (real Chromium + PostgreSQL) |
+| **Stated rules** | New baseline rule **B10**: rules a page states about its own inputs hold on submit. Findings show the page-stated provenance (e.g. `page-stated: max=8 on "Party size"`). Values are typed like a user types them; nothing edits the page's HTML, and a value the browser refuses is the rule holding (tested: `maxlength` truncation, `max` refused by the browser). | `scout.test.ts`, `batch-runner.test.ts` |
+| **Coverage** | Per run: controls on the pages the run reached, exercised (a browser action used them and succeeded), blocked by policy (off-site or denied by the contract), and not exercised. Shown on the run page as "N of M controls exercised" with the per-page table and its denominator; never coverage of the whole site. | unit (counting), `batch-runner.test.ts` (6 exercised, 1 blocked) |
+| **Retest** | A failed expectation can be reported as `{kind:"batch", batch, step}`. Oddhound saves the recorded steps and expectations as a `batch` scenario; verification and retest replay it unchanged under the same hash rule and the same expectation judge. | `batch-runner.test.ts`: verified 2/2, *fixed* on the fixed server, still *open* on the unfixed one |
+
+**Not built:** server-side enforcement of stated rules through a separately verified, scoped request mode (MVP §9). This build tests stated rules only through the normal user interface. The behavioural families of MVP §9 (claim vs. truth, two tabs, invariants, interruption, differential) have no new labelled fixture defects yet.
+
+**R4 measurement.** Same demo target, goals, rules and $2/60-turn/250-action limits; real `muse-spark-1.3`; fresh sandboxed container per run (`sandbox_on`); exploration capped at $0.50 by the harness (`tests/e2e/r4-compare.ts`; not reached). "Defects" = seeded rules R1, R2, R4, R5 verified 2/2 by independent replay.
+
+| Run | Mode | Defects | False findings | Turns | Actions | Cost | Batches (steps) / surprises | Controls exercised |
+|---|---|---|---|---|---|---|---|---|
+| fddb4787 | one model call per step | 3/4 (R1 R2 R4) | 0 | 58 | 43 | $0.27 | – | 9 of 39 |
+| 321b6496 | scenario batches | **4/4** | 0 | 60 (turn cap) | 70 | $0.38 | 17 (58) / 9 | 23 of 48 |
+| 3e6274fa | one model call per step | 2/4 (R1 R2) | 0 | 58 | 47 | $0.24 | – | 12 of 40 |
+| 10dd3eff | scenario batches | 3/4 (R1 R2 R4) | 0 | 58 | 72 | $0.33 | 14 (55) / 8 | 18 of 47 |
+| **Total** | per step | **5/8** | 0 | 116 | 90 | **$0.50** | | |
+| **Total** | batches | **7/8** | 0 | 118 | 142 | **$0.71** | | |
+
+**Decision: batches are the default** (`DEFAULT_AGENT_MODE = 'batch'`; `ODDHOUND_AGENT_MODE=per_step|steps|batch` overrides), because they found at least as many defects (7 vs 5). What the numbers do and do not show:
+
+- Batching did **not** reduce model calls in these runs: both modes used almost the whole 60-turn budget. It turned the same turns into about 60% more browser actions (1.2 vs 0.78 per turn), roughly twice the controls exercised and more verified defects. Cost per verified defect was about equal ($0.10 vs $0.10); cost per run was about 40% higher, because batch results are longer.
+- Batches averaged 3.6 steps, shorter than the planned 5-15. Most surprises were real signals: an expected rejection that did not happen was the seeded defect itself.
+- Run 321b6496 spent 18 of its 60 turns on `report_candidate`, 7 of them refused for a missing `control_values` (the model nested it inside the scenario). Fixed before the second pair: nested or numeric control values are accepted, and repeat reports of the same rule are answered "already recorded".
+- Two runs per mode on one site is a small sample, and run-to-run variation is large (per-step found 3 then 2). Not repeated on a real verified site: no locally verified real site was available, and the hosted deployment was out of scope for this branch.
+
+Total Meta spend for R4: **$1.21**.
 
 ## 3b. First real verified site: danravekeh.com (October 27, 2026)
 

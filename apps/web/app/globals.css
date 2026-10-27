@@ -256,6 +256,12 @@ fieldset { min-width: 0; }
 .pill-stat { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 999px; background: var(--surface-3); color: var(--text-2); font-size: 12.5px; font-weight: 550; white-space: nowrap; }
 .dot { width: 7px; height: 7px; border-radius: 999px; background: currentColor; flex: none; }
 
+/* Coverage bar: exercised and blocked shares of controls in observed pages */
+.cov-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--separator-strong); }
+.cov-bar > span { display: block; height: 100%; }
+.cov-done { background: var(--accent); }
+.cov-blocked { background: var(--warn); }
+.cov-key { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; background: var(--separator-strong); }
 /* Quota meter: honest count with a defined denominator */
 .meter { display: inline-flex; gap: 3px; }
 .meter > i { width: 14px; height: 6px; border-radius: 3px; background: var(--separator-strong); }
