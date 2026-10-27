@@ -10,6 +10,7 @@ import { randomBytes } from 'node:crypto';
 import type { BrowserContext, Page } from 'playwright';
 import { canonicalJson, sha256 } from '../ledger/runs.ts';
 import { attachSentinels, checkPage, describeSignal, routeOf, type Signal } from '../browser/sentinels.ts';
+import { ExpectSchema, judgeExpectation, pageFacts } from './expect.ts';
 
 const Template = z.string().max(200);
 const FieldMap = z.record(z.string().min(1).max(80), Template).refine((m) => Object.keys(m).length > 0 && Object.keys(m).length <= 12, 'between 1 and 12 fields');
@@ -69,16 +70,34 @@ export const ScenarioSchema = z.discriminatedUnion('kind', [
     steps: z.array(z.lazy(() => TraceStepSchema)).max(14),
     oracle: z.lazy(() => OracleSchema),
   }),
+  // A scenario batch: steps Oddhound recorded while running a model-planned batch, each with the
+  // model's expectation, judged by trusted code. `oracleStep` (1-based) is the step whose expectation
+  // is the rule check; earlier expectations are preconditions. Replayed unchanged on retest.
+  z.object({
+    kind: z.literal('batch'),
+    device: z.enum(['desktop', 'mobile']),
+    auth: AuthRecipeSchema.optional(),
+    start: z.string().startsWith('/').max(300),
+    steps: z.array(z.object({ step: z.lazy(() => TraceStepSchema), expect: ExpectSchema.optional() })).min(1).max(15),
+    oracleStep: z.number().int().min(1).max(15),
+  }),
 ]);
 export type Scenario = z.infer<typeof ScenarioSchema>;
 
+/** Keys a user can press. Shared by the agent's tools and the replayed steps. */
+export const KEYS = ['Enter', 'Tab', 'Escape', 'ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown', 'Space'] as const;
+/** Roles a replayed click can target (ARIA widgets included). */
+export const CLICK_ROLES = ['button', 'link', 'other', 'tab', 'menuitem', 'switch', 'checkbox', 'radio', 'option', 'slider', 'combobox', 'treeitem'] as const;
+
 export const TraceStepSchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('goto'), path: z.string().startsWith('/').max(300) }),
-  z.object({ op: z.literal('click'), target: z.string().min(1).max(120), role: z.enum(['button', 'link', 'other']) }),
-  z.object({ op: z.literal('fill'), field: z.string().min(1).max(80), value: z.string().max(600) }),
+  z.object({ op: z.literal('click'), target: z.string().min(1).max(120), role: z.enum(CLICK_ROLES) }),
+  z.object({ op: z.literal('fill'), field: z.string().min(1).max(80), value: z.string().max(5200) }),
   z.object({ op: z.literal('select'), field: z.string().min(1).max(80), value: z.string().max(200) }),
-  z.object({ op: z.literal('press'), key: z.enum(['Enter', 'Tab', 'Escape', 'ArrowDown', 'ArrowUp', 'Space']) }),
+  z.object({ op: z.literal('press'), key: z.enum(KEYS) }),
   z.object({ op: z.literal('back') }),
+  // Drag one element onto another, both named by visible text (HTML5 drag and drop or pointer drag).
+  z.object({ op: z.literal('drag'), source: z.string().min(1).max(120), target: z.string().min(1).max(120) }),
 ]);
 export type TraceStep = z.infer<typeof TraceStepSchema>;
 
@@ -274,6 +293,7 @@ export async function replayScenario(s: Scenario, env: ReplayEnv): Promise<Repla
     }
 
     if (s.kind === 'trace') return await replayTrace(s, open, env, screenshots);
+    if (s.kind === 'batch') return await replayBatch(s, open, env, screenshots);
 
     // mobile_reachability
     const page = await open('mobile', s.auth ? 'A' : undefined, s.auth);
@@ -321,15 +341,28 @@ async function runStep(page: Page, origin: string, step: TraceStep, vars: Record
     case 'fill': await (await fieldLocator(page, step.field)).fill(expand(step.value, vars), { timeout: 5_000 }); return;
     case 'select': await (await fieldLocator(page, step.field)).selectOption(expand(step.value, vars), { timeout: 5_000 }); return;
     case 'click': {
-      const byRole = step.role === 'other'
-        ? page.getByText(step.target, { exact: true })
-        : page.getByRole(step.role, { name: step.target, exact: true }).or(page.getByRole(step.role, { name: step.target }));
-      const loc = (await byRole.count()) ? byRole.first() : page.getByText(step.target).first();
-      if (!(await loc.count())) throw new ReplayBlocked(`could not find "${step.target}" to click`);
+      const loc = await targetLocator(page, step.target, step.role);
       await loc.click({ timeout: 5_000 });
+      await page.waitForLoadState('domcontentloaded').catch(() => {});
+      return;
+    }
+    case 'drag': {
+      const from = await targetLocator(page, step.source, 'other');
+      const to = await targetLocator(page, step.target, 'other');
+      await from.dragTo(to, { timeout: 5_000 });
       await page.waitForLoadState('domcontentloaded').catch(() => {});
     }
   }
+}
+
+/** Find a visible control by its text: by role first, then by exact and partial text. */
+async function targetLocator(page: Page, text: string, role: (typeof CLICK_ROLES)[number]) {
+  const byRole = role === 'other'
+    ? page.getByText(text, { exact: true }).or(page.getByLabel(text, { exact: true }))
+    : page.getByRole(role, { name: text, exact: true }).or(page.getByRole(role, { name: text }));
+  const loc = (await byRole.count()) ? byRole.first() : page.getByText(text).first();
+  if (!(await loc.count())) throw new ReplayBlocked(`could not find "${text}"`);
+  return loc;
 }
 
 function routeMatches(pattern: string, url: string): boolean {
@@ -386,6 +419,51 @@ async function replayTrace(
     details: { oracle: o, steps: s.steps.length, signals: signals.map(describeSignal).slice(0, 10) },
     screenshots,
   };
+}
+
+type BatchScenario = Extract<Scenario, { kind: 'batch' }>;
+
+async function replayBatch(
+  s: BatchScenario,
+  open: (device: 'desktop' | 'mobile', role?: string, auth?: AuthRecipe) => Promise<Page>,
+  env: ReplayEnv,
+  screenshots: ReplayResult['screenshots'],
+): Promise<ReplayResult> {
+  const marker = `OH${randomBytes(4).toString('hex').toUpperCase()}`;
+  const page = await open(s.device, s.auth ? 'A' : undefined, s.auth);
+  await page.goto(new URL(s.start, env.origin).toString(), { waitUntil: 'domcontentloaded' });
+  const vars = { ...env.identity(), marker };
+  const last = Math.min(s.oracleStep, s.steps.length);
+  const checks: { step: number; ok: boolean; detail: string }[] = [];
+  for (let i = 0; i < last; i++) {
+    const { step, expect } = s.steps[i]!;
+    const pathBefore = new URL(page.url()).pathname;
+    try { await runStep(page, env.origin, step, vars); }
+    catch (e) {
+      if (e instanceof ReplayBlocked) throw new ReplayBlocked(`step ${i + 1} (${step.op}): ${e.message}`);
+      throw new ReplayBlocked(`step ${i + 1} (${step.op}) failed: ${(e as Error).message.split('\n')[0]!.slice(0, 160)}`);
+    }
+    await page.waitForTimeout(300);
+    if (!expect) continue;
+    const v = judgeExpectation(expect, await pageFacts(page, pathBefore));
+    checks.push({ step: i + 1, ok: v.ok, detail: v.detail });
+    if (i + 1 === last) {
+      screenshots.push(await shot(page, `after step ${i + 1}`));
+      return {
+        outcome: v.ok ? 'passed' : v.unclear ? 'inconclusive' : 'failed',
+        observed: v.ok ? `The expectation held in a fresh session: ${v.detail}.`
+          : v.unclear ? `Could not judge step ${i + 1} in a fresh session: ${v.detail}.`
+            : `Reproduced in a fresh session at step ${i + 1}: ${v.detail}.`,
+        details: { checks, oracleStep: last },
+        screenshots,
+      };
+    }
+    if (!v.ok) {
+      screenshots.push(await shot(page, `precondition step ${i + 1}`));
+      return { outcome: 'inconclusive', observed: `A precondition did not hold at step ${i + 1}: ${v.detail}.`, details: { checks }, screenshots };
+    }
+  }
+  return { outcome: 'blocked', observed: `Step ${last} has no expectation to judge.`, details: { checks }, screenshots };
 }
 
 /** A valid neighbouring case that must keep working (the control for a form_rule finding). */

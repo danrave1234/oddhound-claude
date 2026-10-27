@@ -2,7 +2,8 @@
 // Observations are separated from hypotheses; no source-file paths or framework versions are
 // invented; text that came from the target site is fenced and labelled untrusted (SELF-10).
 
-import type { Scenario } from '../verifier/scenario.ts';
+import type { Scenario, TraceStep } from '../verifier/scenario.ts';
+import type { Expectation } from '../verifier/expect.ts';
 
 export type BriefInput = {
   finding: {
@@ -37,6 +38,12 @@ function reproduction(s: Scenario): string[] {
     steps.push('Sign up a second, unrelated account and open the same record URL.');
   } else if (s.kind === 'mobile_reachability') {
     steps.push(`On a 390x844 phone screen, open \`${s.path}\` and try to press "${s.control}" at every scroll position.`);
+  } else if (s.kind === 'batch') {
+    steps.push(`Open \`${s.start}\` on a ${s.device === 'mobile' ? '390x844 phone' : 'desktop'} screen.`);
+    s.steps.slice(0, s.oracleStep).forEach((x, i) => {
+      const check = x.expect ? ` ${i + 1 === s.oracleStep ? 'Rule check' : 'Precondition'}: ${expectationText(x.expect)}.` : '';
+      steps.push(`${traceStepText(x.step)}${check}`);
+    });
   } else {
     steps.push(`Open \`${s.start}\` on a ${s.device === 'mobile' ? '390x844 phone' : 'desktop'} screen.`);
     for (const st of s.steps) steps.push(traceStepText(st));
@@ -45,7 +52,18 @@ function reproduction(s: Scenario): string[] {
   return steps;
 }
 
-function traceStepText(st: Extract<Scenario, { kind: 'trace' }>['steps'][number]): string {
+/** An expectation as the developer reads it. */
+export function expectationText(e: Expectation): string {
+  const parts: string[] = [];
+  if (e.outcome === 'rejected') parts.push('the input is rejected (an error message or a field the browser marks invalid)');
+  if (e.outcome === 'accepted') parts.push('the input is accepted (no error, and the page moves on or shows success)');
+  if (e.text_visible) parts.push(`"${e.text_visible}" is visible`);
+  if (e.text_absent) parts.push(`"${e.text_absent}" is not visible`);
+  if (e.path) parts.push(`the page is at \`${e.path}\``);
+  return parts.join(' and ');
+}
+
+function traceStepText(st: TraceStep): string {
   switch (st.op) {
     case 'goto': return `Open \`${st.path}\`.`;
     case 'back': return 'Press the browser Back button.';
@@ -53,6 +71,7 @@ function traceStepText(st: Extract<Scenario, { kind: 'trace' }>['steps'][number]
     case 'fill': return `Type ${JSON.stringify(st.value)} into "${st.field}".`;
     case 'select': return `Choose ${JSON.stringify(st.value)} in "${st.field}".`;
     case 'click': return `Click the ${st.role === 'other' ? 'element' : st.role} "${st.target}".`;
+    case 'drag': return `Drag "${st.source}" onto "${st.target}".`;
   }
 }
 
@@ -106,6 +125,7 @@ export function fixBriefMarkdown(b: BriefInput): string {
   if (b.scenario?.assertion.kind === 'cross_account_read') lines.push('- Likely area: the record lookup does not check that the record belongs to the signed-in user (object-level authorization).');
   if (b.scenario?.assertion.kind === 'mobile_reachability') lines.push('- Likely area: a fixed or overlaying element on narrow screens; reserve space for it or let users dismiss it.');
   if (b.scenario?.assertion.kind === 'trace') lines.push(TRACE_GUIDANCE[b.scenario.assertion.oracle.type] ?? '- Likely area: the handler for the last step above.');
+  if (b.scenario?.assertion.kind === 'batch') lines.push('- Likely area: the handler for the step marked "Rule check" above. If the page states a limit for this input, the server must enforce the same limit; client-side attributes alone are not enough.');
   if (b.docs) { lines.push(`- Relevant documentation (${b.docs.library}, retrieved via Context7):`); lines.push('```text'); lines.push(fenceUntrusted(b.docs.excerpt)); lines.push('```'); }
   else lines.push('- No version-specific documentation was attached (stack not declared or documentation unavailable).');
   lines.push('');

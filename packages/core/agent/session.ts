@@ -4,7 +4,7 @@
 import type { Browser, BrowserContext, Page, Response } from 'playwright';
 import { newScopedContext } from '../browser/runtime.ts';
 import { attachScope, type ScopeDecision, type ScopePolicy } from '../browser/scope.ts';
-import { observe, type Observation } from '../browser/snapshot.ts';
+import { observe, type Observation, type ObservedElement } from '../browser/snapshot.ts';
 import { attachSentinels, checkPage, type Signal } from '../browser/sentinels.ts';
 import type { DeviceProfileName } from '../contracts/limits.ts';
 
@@ -65,8 +65,18 @@ export class RunSession {
 
   /** The element kind of a ref in the observation the model acted on. */
   kindOf(ref: string): string | null {
-    return (this.#turnObservation ?? this.lastObservation)?.elements.find((e) => e.ref === ref)?.kind ?? null;
+    return this.elementOf(ref)?.kind ?? null;
   }
+
+  /** The element behind a ref in the observation the model acted on. */
+  elementOf(ref: string): ObservedElement | null {
+    return (this.#turnObservation ?? this.lastObservation)?.elements.find((e) => e.ref === ref) ?? null;
+  }
+
+  // Dialogs (alert/confirm/prompt/beforeunload) since the last drain. They are dismissed, which is the
+  // safe choice a user can make (Cancel), and reported to the runner as a surprise.
+  #dialogs: string[] = [];
+  drainDialogs(): string[] { const d = this.#dialogs; this.#dialogs = []; return d; }
 
   /** Owner sign-in handoff: relaxes scope for owner-driven sign-in only (see scope.ts). */
   setHandoff(active: boolean) { this.#policy.handoffActive = active; }
@@ -90,6 +100,10 @@ export class RunSession {
       ctx.on('response', (r) => { void this.#recordResponse(r); });
       const page = await ctx.newPage();
       attachSentinels(page, (o) => this.inScope(o), (s) => { this.#signals.push(s); });
+      page.on('dialog', (d) => {
+        this.#dialogs.push(`${d.type()}: ${d.message().replace(/\s+/g, ' ').slice(0, 120)}`);
+        void d.dismiss().catch(() => {});
+      });
       page.setDefaultTimeout(10_000);
       // Real sites (especially previews that scale to zero) can take well over 10 s on a cold start.
       page.setDefaultNavigationTimeout(30_000);
@@ -152,6 +166,15 @@ export class RunSession {
   beginTurn() { this.#turnVersion = this.#version; this.#turnObservation = this.lastObservation; }
   #turnVersion = 0;
   #turnObservation: Observation | null = null;
+  /** The observation refs currently resolve against (the model's, until a batch rebases it). */
+  get turnObservation(): Observation | null { return this.#turnObservation ?? this.lastObservation; }
+  get turnVersion(): number { return this.#turnVersion; }
+
+  /** True when a ref from the current turn observation still points at exactly one element. */
+  async hasRef(ref: string): Promise<boolean> {
+    const page = await this.page();
+    return (await page.locator(`[data-oh-ref~="${ref}@${this.#turnVersion}"]`).count()) === 1;
+  }
 
   /** Resolve a model-supplied ref against the turn's snapshot version. Refs from older versions, or
    *  whose element left the document (navigation, re-render), are rejected rather than guessed. */

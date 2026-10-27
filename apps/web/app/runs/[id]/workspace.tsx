@@ -17,7 +17,51 @@ type Snapshot = {
   retests: { id: string; status: string; created_at: string }[];
   plan?: { id: string; area: string; risk: string; technique: string; status: string; note: string | null }[];
   detectedSignals?: number;
+  coverage?: { total: number; exercised: number; blocked: number; pages: number; routes: { route: string; total: number; exercised: number; blocked: number }[] } | null;
+  agentMode?: string | null;
 };
+
+/**
+ * Coverage of observed states: controls the scout listed on pages this run reached, and how many a
+ * browser action actually used. The denominator is always shown; it is never "the whole site".
+ */
+function CoverageCard({ coverage: c, active }: { coverage: NonNullable<Snapshot['coverage']> | null | undefined; active: boolean }) {
+  if (!c || c.total === 0) {
+    return (
+      <div className="card fade-in">
+        <div className="card-header"><h2 className="h3"><Icon name="pointer" /> Coverage</h2></div>
+        <Empty icon="pointer" text={active ? 'Counting the controls on each page the run reaches…' : 'No coverage was recorded for this run.'} />
+      </div>
+    );
+  }
+  const pct = (n: number, d: number) => (d ? Math.round((n / d) * 100) : 0);
+  return (
+    <div className="card fade-in">
+      <div className="card-header">
+        <h2 className="h3"><Icon name="pointer" /> Coverage</h2>
+        <span className="muted" style={{ fontSize: 12.5 }}>Controls on pages this run reached</span>
+        <span className="tabular" style={{ marginLeft: 'auto', fontSize: 13, fontWeight: 600 }}>{c.exercised} of {c.total} controls exercised</span>
+      </div>
+      <div style={{ padding: '4px 16px 12px' }}>
+        <div className="cov-bar" role="img" aria-label={`${c.exercised} of ${c.total} controls exercised, ${c.blocked} blocked by policy`}>
+          <span className="cov-done" style={{ width: `${pct(c.exercised, c.total)}%` }} />
+          <span className="cov-blocked" style={{ width: `${pct(c.blocked, c.total)}%` }} />
+        </div>
+        <div className="row muted tabular" style={{ gap: 14, fontSize: 12.5, marginTop: 6 }}>
+          <span><i className="cov-key cov-done" aria-hidden /> Exercised {c.exercised}</span>
+          <span><i className="cov-key cov-blocked" aria-hidden /> Blocked by policy {c.blocked}</span>
+          <span><i className="cov-key" aria-hidden /> Not exercised {c.total - c.exercised - c.blocked}</span>
+        </div>
+      </div>
+      <div className="table-wrap"><table className="grid"><thead><tr><th>Page</th><th>Exercised</th><th className="hide-sm">Blocked</th><th className="hide-sm">Not exercised</th></tr></thead><tbody>
+        {c.routes.map((r) => (
+          <tr key={r.route}><td className="mono break">{r.route}</td><td className="tabular">{r.exercised} of {r.total}</td><td className="tabular hide-sm">{r.blocked}</td><td className="tabular hide-sm">{r.total - r.exercised - r.blocked}</td></tr>
+        ))}
+      </tbody></table></div>
+      <div className="card-footer"><span className="muted" style={{ fontSize: 12.5 }}>Counts only controls listed on the <span className="tabular">{c.pages}</span> page(s) this run reached, and counts one as exercised only when a browser action used it. Blocked means off-site or denied by the run contract. Not coverage of the whole site.</span></div>
+    </div>
+  );
+}
 
 const RISK_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -85,6 +129,11 @@ function describe(e: Snapshot['events'][number]): string | null {
     case 'handoff.cancelled': return 'Owner cancelled the sign-in; run stopped';
     case 'handoff.timed_out': return 'Sign-in time limit reached; run stopped';
     case 'run.phase': return `Phase: ${p.phase}`;
+    case 'agent.mode': return p.mode === 'batch' ? 'The agent plans scenario batches; the model is called again only on a surprise' : p.mode === 'per_step' ? 'The agent decides one browser action per model call' : 'The agent batches predictable steps';
+    case 'batch.started': return `Scenario batch ${p.batch} (${p.steps} steps): ${p.goal}`;
+    case 'batch.finished': return p.surprise ? `Batch ${p.batch} stopped after ${p.ran} of ${p.planned} steps: ${p.surprise}` : `Batch ${p.batch} ran all ${p.ran} steps as expected`;
+    case 'batch.expectation': return p.ok ? null : `Batch ${p.batch} step ${p.step}: expectation ${p.unclear ? 'could not be judged' : 'failed'} — ${p.detail}`;
+    case 'dialog.dismissed': return `A page dialog was dismissed: ${(p.dialogs ?? []).join(' | ')}`;
     case 'plan.updated': {
       const cs = (p.charters ?? []) as { risk: string; status: string }[];
       return `Test plan updated: ${cs.length} charter(s), ${cs.filter((c) => c.risk === 'critical' || c.risk === 'high').length} critical/high, ${cs.filter((c) => c.status === 'completed').length} completed`;
@@ -250,6 +299,7 @@ export function RunWorkspace({ initial, controllable, replay, signedIn }: { init
             {view === 'workflows' && (wfMode === 'list' ? (
               <>
                 {(snap.plan?.length || run.mode !== 'retest') && <TestPlan plan={snap.plan ?? []} active={active} />}
+                {run.mode !== 'retest' && <CoverageCard coverage={snap.coverage} active={active} />}
                 <div className="card fade-in">
                   <div className="card-header"><h2 className="h3"><Icon name="trail" /> Workflows</h2><span className="muted tabular" style={{ marginLeft: 'auto', fontSize: 12.5 }}>{snap.workflows.length}</span></div>
                   {snap.workflows.length ? (
@@ -371,6 +421,7 @@ function RunDetails({ snap }: { snap: Snapshot }) {
         <dt>Browser</dt><dd className="mono">{r.browser_ref ?? '—'} ({r.browser_state ?? '—'})</dd>
         <dt>Chromium sandbox</dt><dd>{r.sandbox_verdict ?? '—'}</dd>
         <dt>Environment</dt><dd>{r.environment} · {r.test_mode === 'active' ? 'active testing' : 'observation only'}</dd>
+        {snap.agentMode && <><dt>Agent mode</dt><dd>{snap.agentMode === 'batch' ? 'Scenario batches (model called on surprises)' : snap.agentMode === 'per_step' ? 'One action per model call' : 'Batched steps'}</dd></>}
         <dt>Model spend</dt><dd className="tabular">${(snap.spend.settled / 1e6).toFixed(4)} settled{snap.spend.outstanding ? ` + $${(snap.spend.outstanding / 1e6).toFixed(4)} reserved` : ''}</dd>
       </dl>
       <section className="section"><h3 className="section-title">Owner focus areas</h3>
