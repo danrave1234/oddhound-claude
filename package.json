@@ -1,0 +1,29 @@
+{
+  "name": "oddhound-claude",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=26 <27"
+  },
+  "scripts": {
+    "fixture": "node apps/fixture/server.ts",
+    "fixture:fixed": "node apps/fixture/server.ts --fixed",
+    "worker": "node --env-file-if-exists=.env apps/worker/main.ts",
+    "web": "pnpm --filter @oddhound/web dev",
+    "db:migrate": "node --env-file-if-exists=.env packages/core/db/migrate.ts",
+    "test": "vitest run",
+    "test:e2e": "node --env-file-if-exists=.env tests/e2e/run-e2e.ts",
+    "smoke:meta": "node --env-file-if-exists=.env tests/smoke/meta-smoke.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint:icons": "node tests/lint/no-lucide.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "pg": "8.23.1",
+    "playwright": "1.64.1",
+    "typescript": "^5.9.0",
+    "vitest": "^5.0.5",
+    "zod": "^4.6.7"
+  }
+}

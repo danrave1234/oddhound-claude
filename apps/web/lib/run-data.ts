@@ -1,0 +1,37 @@
+import 'server-only';
+import { db } from './server';
+import { runSpend } from '@core/ledger/spend.ts';
+
+export type RunSnapshot = Awaited<ReturnType<typeof loadRunSnapshot>>;
+
+/** Everything the run workspace shows, read from saved records only (never invented). */
+export async function loadRunSnapshot(runId: string) {
+  const pool = db();
+  const run = (await pool.query(`SELECT id, project_id, mode, origin, environment, test_mode, status, stop_reason, browser_state, browser_ref, sandbox_verdict,
+      provider, model, queued_at, started_at, finished_at, expires_at, parent_run_id, contract->'goals' AS goals, contract->'rules' AS rules, contract->'devices' AS devices
+    FROM runs WHERE id = $1`, [runId])).rows[0];
+  if (!run) return null;
+  const [workflows, states, transitions, findings, events, actions, shot, spend, children] = await Promise.all([
+    pool.query('SELECT name, status, summary, updated_at FROM workflows WHERE run_id = $1 ORDER BY updated_at', [runId]),
+    pool.query('SELECT id, route, title, actor, device FROM graph_states WHERE run_id = $1 ORDER BY first_seen_at', [runId]),
+    pool.query('SELECT id, from_state, to_state, label FROM graph_transitions WHERE run_id = $1', [runId]),
+    pool.query(`SELECT id, title, category, verification, lifecycle, impact, confidence, rule_id, rule_source, expected, observed, device, actor, limitations, evidence_ids, scenario_id, created_at, updated_at
+      FROM findings WHERE run_id = $1 ORDER BY CASE category WHEN 'verified_issue' THEN 0 WHEN 'needs_review' THEN 1 WHEN 'configuration_observation' THEN 2 ELSE 3 END, created_at`, [runId]),
+    pool.query('SELECT seq, at, type, payload FROM run_events WHERE run_id = $1 ORDER BY seq DESC LIMIT 300', [runId]),
+    pool.query('SELECT seq, actor, device, tool, state, url_after, intended_at FROM actions WHERE run_id = $1 ORDER BY seq DESC LIMIT 60', [runId]),
+    pool.query(`SELECT id, label, created_at FROM artifacts WHERE run_id = $1 AND kind = 'screenshot' ORDER BY created_at DESC LIMIT 1`, [runId]),
+    runSpend(pool, runId),
+    pool.query(`SELECT id, mode, status, created_at FROM runs WHERE parent_run_id = $1 ORDER BY created_at DESC`, [runId]),
+  ]);
+  return {
+    run,
+    workflows: workflows.rows,
+    graph: { states: states.rows, transitions: transitions.rows },
+    findings: findings.rows,
+    events: events.rows.reverse(),
+    actions: actions.rows,
+    latestScreenshot: shot.rows[0] ?? null,
+    spend,
+    retests: children.rows,
+  };
+}
