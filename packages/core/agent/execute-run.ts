@@ -166,7 +166,7 @@ export async function executeRun(deps: ExecuteDeps, runId: string): Promise<RunS
 
     // 4. Exploration with the Meta model.
     const candidates: Candidate[] = [];
-    const recorded: Recorded = { auth: handoffState ? { kind: 'handoff' } : null, labelsByPath: new Map(), controlsByPath: new Map() };
+    const recorded: Recorded = { auth: handoffState ? { kind: 'handoff' } : null, labelsByPath: new Map(), controlsByPath: new Map(), submitByPath: new Map(), acceptedByPath: new Map() };
     const loop = await agentLoop({ deps, runId, generation, contract, run, provider, price, session, ev, abort, candidates, recorded });
     if (loop.stopReason) stopReason = loop.stopReason;
 
@@ -233,7 +233,13 @@ type LoopArgs = {
 };
 
 /** What Oddhound itself observed during exploration, used to ground the model's scenario recipes. */
-export type Recorded = { auth: AuthRecipe | null; labelsByPath: Map<string, Set<string>>; controlsByPath: Map<string, Set<string>> };
+export type Recorded = {
+  auth: AuthRecipe | null; labelsByPath: Map<string, Set<string>>; controlsByPath: Map<string, Set<string>>;
+  /** Button the agent clicked to submit a filled form on each path (observed, not remembered by the model). */
+  submitByPath?: Map<string, string>;
+  /** Field values a form on each path accepted: the page moved on with no error message after submit. */
+  acceptedByPath?: Map<string, Map<string, Set<string>>>;
+};
 
 async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: string }> {
   const { deps: { db }, runId, generation, contract, provider, price, session, ev, abort, candidates, recorded } = a;
@@ -277,6 +283,26 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
   const plan = new Map<string, Charter>();
   let finishRefusals = 0;
   let detectorCandidates = 0;
+  // Values typed into forms on the current path, so a later submit can be recorded as accepted or not.
+  const typed = new Map<string, Map<string, string>>();
+  const noteTyped = async (label: string | null, value: string) => {
+    if (!label || [...secrets].some((x) => value.includes(x))) return;
+    const path = new URL((await session.page()).url()).pathname;
+    const m = typed.get(path) ?? new Map<string, string>(); m.set(label, value); typed.set(path, m);
+  };
+  const noteSubmit = (path: string, label: string | null) => {
+    const values = typed.get(path);
+    if (!label || !values?.size) return;
+    recorded.submitByPath?.set(path, label);
+    const o = session.lastObservation;
+    const landed = o ? new URL(o.url).pathname : path;
+    if (o && landed !== path && !o.alerts.some((a) => /error|invalid|required|must|cannot|already/i.test(a))) {
+      const acc = recorded.acceptedByPath?.get(path) ?? new Map<string, Set<string>>();
+      for (const [k, v] of values) { const s = acc.get(k) ?? new Set<string>(); s.add(v); acc.set(k, s); }
+      recorded.acceptedByPath?.set(path, acc);
+      typed.delete(path);
+    }
+  };
   // Leave time at the end for independent verification (replays) before the run's hard expiry.
   const expiresAt = (await db.query<{ expires_at: Date | null }>('SELECT expires_at FROM runs WHERE id = $1', [runId])).rows[0]?.expires_at?.getTime() ?? Date.now() + LIMITS.runWallClockMs;
   const verificationReserveMs = () => Math.min(6 * 60_000, 90_000 + candidates.length * 35_000);
@@ -536,7 +562,9 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
         const loc = await session.locate(args.ref).catch((e: Error) => e);
         if (loc instanceof Error) return { text: loc.message };
         const clickedLabel = session.labelOf(args.ref);
+        const clickPath = new URL((await session.page()).url()).pathname;
         const text = await runBrowserAction(name, args, `Clicked ${session.describe(args.ref)}`, async () => { await loc.click({ timeout: 5_000 }); await (await session.page()).waitForLoadState('domcontentloaded'); });
+        noteSubmit(clickPath, clickedLabel);
         if (pendingAuth && clickedLabel && Object.values(pendingAuth.fields).includes('{password}') && !recorded.auth) {
           const o = session.lastObservation;
           const landed = o ? new URL(o.url).pathname : pendingAuth.path;
@@ -564,6 +592,7 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
           pendingAuth ??= { path: new URL((await session.page()).url()).pathname, fields: {} };
           pendingAuth.fields[label] = ident.name === args.value ? '{name}' : '{email}';
         }
+        await noteTyped(label, args.value);
         return { text: await runBrowserAction(name, args, `Typed ${JSON.stringify(args.value.slice(0, 40))} into ${session.describe(args.ref)}`, async () => { await loc.fill(args.value, { timeout: 5_000 }); }) };
       }
       case 'fill_credential': {
@@ -609,6 +638,7 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
               pendingAuth.fields[label] = ident.name === f.value ? '{name}' : '{email}';
             }
             steps.push({ label, loc, value: f.value, shown: `${label ?? f.ref}=${JSON.stringify(f.value.slice(0, 30))}` });
+            await noteTyped(label, f.value);
           }
         }
         const ledgerArgs = { fields: (args.fields as Record<string, unknown>[]).map((f) => ('credential_ref' in f ? { ref: f.ref, credential_ref: f.credential_ref, field: f.field } : f)) };
@@ -619,6 +649,7 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
       case 'select_option': {
         const loc = await session.locate(args.ref).catch((e: Error) => e);
         if (loc instanceof Error) return { text: loc.message };
+        await noteTyped(session.labelOf(args.ref), args.value);
         return { text: await runBrowserAction(name, args, `Selected ${JSON.stringify(args.value)} in ${session.describe(args.ref)}`, async () => { await loc.selectOption(args.value, { timeout: 5_000 }); }) };
       }
       case 'press_key':
@@ -777,13 +808,31 @@ export function groundCandidate(c: Candidate, recorded: Recorded): Candidate {
   // the form was observed while signed in, so the replay must sign in too.
   if (recorded.auth && s.kind !== 'cross_account_read') s.auth = recorded.auth;
   else if (recorded.auth && s.auth) s.auth = recorded.auth;
+  // A submit label the model misremembered is replaced by the button Oddhound saw it click on that path.
+  const groundSubmit = (path: string, submit: string) => {
+    const seen = recorded.controlsByPath.get(path);
+    const clicked = recorded.submitByPath?.get(path);
+    const known = seen && [...seen].some((l) => l.toLowerCase().includes(submit.toLowerCase()));
+    return !known && clicked ? clicked : submit;
+  };
+  let controlValues = c.controlValues;
   if (s.kind === 'form_rule') {
     const observed = recorded.labelsByPath.get(s.form.path);
     s.form.fields = groundFields(s.form.fields, observed);
     s.testedField = closestLabel(s.testedField, observed);
+    s.form.submit = groundSubmit(s.form.path, s.form.submit);
+    controlValues = controlValues ? groundFields(controlValues, observed) : undefined;
+    // No valid neighbour given: use a value this form actually accepted for the tested field.
+    if (s.expectation === 'rejected' && !controlValues?.[s.testedField]) {
+      const bad = s.form.fields[s.testedField];
+      const accepted = [...(recorded.acceptedByPath?.get(s.form.path)?.get(s.testedField) ?? [])].find((v) => v !== bad && v.trim() !== '');
+      if (accepted !== undefined) controlValues = { ...controlValues, [s.testedField]: accepted };
+    }
   }
-  if (s.kind === 'cross_account_read') { s.create.fields = groundFields(s.create.fields, recorded.labelsByPath.get(s.create.path)); }
-  const controlValues = c.controlValues && s.kind === 'form_rule' ? groundFields(c.controlValues, recorded.labelsByPath.get(s.form.path)) : c.controlValues;
+  if (s.kind === 'cross_account_read') {
+    s.create.fields = groundFields(s.create.fields, recorded.labelsByPath.get(s.create.path));
+    s.create.submit = groundSubmit(s.create.path, s.create.submit);
+  }
   return { ...c, scenario: s, controlValues };
 }
 
