@@ -1,0 +1,184 @@
+{
+  "at": "2026-10-27T04:14:59.694Z",
+  "provider": "meta",
+  "run": {
+    "status": "stopped",
+    "stop_reason": "limit_turns",
+    "sandbox_verdict": "sandbox_on",
+    "browser_state": "terminated",
+    "provider": "meta-direct",
+    "model": "muse-spark-1.3"
+  },
+  "findings": [
+    {
+      "title": "No Content-Security-Policy on HTML pages",
+      "category": "configuration_observation",
+      "verification": "verified",
+      "lifecycle": null,
+      "rule_id": null,
+      "confidence": "observed in captured responses",
+      "observed": "No Content-Security-Policy header on 7 page route(s): /, /register, /bookings, /bookings/new, /bookings/:id, /bookings/:id/edit."
+    },
+    {
+      "title": "Pages can be framed by other sites",
+      "category": "configuration_observation",
+      "verification": "verified",
+      "lifecycle": null,
+      "rule_id": null,
+      "confidence": "observed in captured responses",
+      "observed": "No X-Frame-Options or CSP frame-ancestors on 7 page route(s): /, /register, /bookings, /bookings/new, /bookings/:id, /bookings/:id/edit."
+    },
+    {
+      "title": "Party size 0 accepted",
+      "category": "verified_issue",
+      "verification": "verified",
+      "lifecycle": "open",
+      "rule_id": "R1",
+      "confidence": "reproduced 2/2",
+      "observed": "The submission was accepted and saved: marker OH85EA732D appears on /bookings."
+    },
+    {
+      "title": "Spaces-only guest name accepted",
+      "category": "verified_issue",
+      "verification": "verified",
+      "lifecycle": "open",
+      "rule_id": "R2",
+      "confidence": "reproduced 2/2",
+      "observed": "The submission was accepted and saved: marker OH977C64B8 appears on /bookings."
+    },
+    {
+      "title": "Other user's booking readable by direct URL",
+      "category": "verified_issue",
+      "verification": "verified",
+      "lifecycle": "open",
+      "rule_id": "R4",
+      "confidence": "reproduced 2/2",
+      "observed": "A second, unrelated account opened /bookings/9 and saw the first account's private record (HTTP 200, marker OH1B05DAAB present)."
+    }
+  ],
+  "actions": [
+    {
+      "state": "succeeded",
+      "n": 51
+    }
+  ],
+  "events": [
+    {
+      "type": "action.finished",
+      "n": 51
+    },
+    {
+      "type": "action.started",
+      "n": 51
+    },
+    {
+      "type": "browser.ready",
+      "n": 1
+    },
+    {
+      "type": "browser.terminated",
+      "n": 1
+    },
+    {
+      "type": "finding.candidate",
+      "n": 3
+    },
+    {
+      "type": "finding.observation",
+      "n": 2
+    },
+    {
+      "type": "finding.verified",
+      "n": 3
+    },
+    {
+      "type": "finding.verifying",
+      "n": 3
+    },
+    {
+      "type": "fixture.reset",
+      "n": 1
+    },
+    {
+      "type": "identity.created",
+      "n": 4
+    },
+    {
+      "type": "model.turn",
+      "n": 60
+    },
+    {
+      "type": "provider.selected",
+      "n": 1
+    },
+    {
+      "type": "recipe.recorded",
+      "n": 1
+    },
+    {
+      "type": "run.phase",
+      "n": 1
+    },
+    {
+      "type": "run.status",
+      "n": 3
+    },
+    {
+      "type": "run.stopped",
+      "n": 1
+    },
+    {
+      "type": "state.discovered",
+      "n": 12
+    },
+    {
+      "type": "transition.observed",
+      "n": 17
+    },
+    {
+      "type": "workflow.updated",
+      "n": 1
+    }
+  ],
+  "workflows": [
+    {
+      "name": "Registration",
+      "status": "completed"
+    }
+  ],
+  "graph": {
+    "states": 12,
+    "transitions": 17
+  },
+  "retestEvents": [
+    {
+      "title": "Party size 0 accepted",
+      "control": "not_run",
+      "outcome": "passed",
+      "observed": "The submission was not saved: no new record on /bookings (0 → 0 rows, marker absent).",
+      "findingId": "f1d5b013-36ea-46ec-8aee-1ec2dae5a24e",
+      "lifecycle": "fixed"
+    },
+    {
+      "title": "Spaces-only guest name accepted",
+      "control": "not_run",
+      "outcome": "failed",
+      "observed": "The submission was accepted and saved: marker OH9C059F73 appears on /bookings.",
+      "findingId": "2a5404a2-2af9-46dc-b234-bc7fe9cb9a16",
+      "lifecycle": "open"
+    },
+    {
+      "title": "Other user's booking readable by direct URL",
+      "control": "not_run",
+      "outcome": "passed",
+      "observed": "The second account could not see the first account's record at /bookings/2 (HTTP 404, marker absent).",
+      "findingId": "6e5773dd-c770-480d-b6b1-5c31a58f37fc",
+      "lifecycle": "fixed"
+    }
+  ],
+  "failures": [
+    "discovery run completed (status=stopped, reason=limit_turns)",
+    "seeded defect for R5 found and independently verified",
+    "every verified finding passes its unchanged assertion on the fixed build (and controls pass)"
+  ]
+}

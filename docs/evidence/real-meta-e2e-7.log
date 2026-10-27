@@ -1,0 +1,61 @@
+{
+  "run": {
+    "status": "completed",
+    "stop_reason": null,
+    "sandbox_verdict": "sandbox_on",
+    "browser_state": "terminated",
+    "provider": "meta-direct",
+    "model": "muse-spark-1.3"
+  },
+  "seconds": 89,
+  "actions": [
+    {
+      "state": "succeeded",
+      "n": 33
+    }
+  ],
+  "workflows": [
+    {
+      "name": "Registration",
+      "status": "completed"
+    }
+  ],
+  "graph": {
+    "states": 12,
+    "transitions": 19
+  }
+}
+┌─────────┬──────┬─────────────────────────────┬──────────────┬───────────┬────────────────────────────────────────────┐
+│ (index) │ rule │ category                    │ verification │ lifecycle │ title                                      │
+├─────────┼──────┼─────────────────────────────┼──────────────┼───────────┼────────────────────────────────────────────┤
+│ 0       │ null │ 'configuration_observation' │ 'verified'   │ null      │ 'No Content-Security-Policy on HTML pages' │
+│ 1       │ null │ 'configuration_observation' │ 'verified'   │ null      │ 'Pages can be framed by other sites'       │
+│ 2       │ 'R1' │ 'verified_issue'            │ 'verified'   │ 'open'    │ 'R1 party size 0 accepted'                 │
+│ 3       │ 'R2' │ 'verified_issue'            │ 'verified'   │ 'open'    │ 'R2 spaces-only name accepted'             │
+│ 4       │ 'R4' │ 'verified_issue'            │ 'verified'   │ 'open'    │ 'R4 cross-account check'                   │
+│ 5       │ 'R5' │ 'verified_issue'            │ 'verified'   │ 'open'    │ 'R5 Book table covered on mobile'          │
+└─────────┴──────┴─────────────────────────────┴──────────────┴───────────┴────────────────────────────────────────────┘
+PASS  discovery run completed (status=completed, reason=null)
+PASS  browser destroyed and confirmed after the run
+PASS  seeded defect for R1 found and independently verified
+PASS  seeded defect for R2 found and independently verified
+PASS  seeded defect for R4 found and independently verified
+PASS  seeded defect for R5 found and independently verified
+PASS  past-date control (R3) is not reported as a defect
+PASS  header/cookie configuration observations recorded separately
+PASS  registration discovered and completed (sign-up recorded by Oddhound)
+PASS  workflow graph has observed states and transitions
+PASS  scope events recorded
+┌─────────┬───────────────────────────────────┬──────────┬───────────┬───────────┐
+│ (index) │ title                             │ outcome  │ control   │ lifecycle │
+├─────────┼───────────────────────────────────┼──────────┼───────────┼───────────┤
+│ 0       │ 'R1 party size 0 accepted'        │ 'passed' │ 'passed'  │ 'fixed'   │
+│ 1       │ 'R2 spaces-only name accepted'    │ 'passed' │ 'passed'  │ 'fixed'   │
+│ 2       │ 'R4 cross-account check'          │ 'passed' │ 'not_run' │ 'fixed'   │
+│ 3       │ 'R5 Book table covered on mobile' │ 'passed' │ 'not_run' │ 'fixed'   │
+└─────────┴───────────────────────────────────┴──────────┴───────────┴───────────┘
+PASS  retest run completed (status=completed)
+PASS  every verified finding passes its unchanged assertion on the fixed build (and controls pass)
+PASS  retest on the unfixed build keeps every finding open (no false "fixed")
+
+ALL E2E CHECKS PASSED

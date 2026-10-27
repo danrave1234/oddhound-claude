@@ -164,6 +164,17 @@ export function RunWorkspace({ initial, controllable, replay, signedIn }: { init
           </div>
 
           <div style={{ padding: 16 }}>
+            {run.mode === 'retest' && (
+              <div className="card" style={{ marginBottom: 14 }}>
+                <div style={{ padding: '10px 12px' }} className="section-title">Retest results — saved assertions replayed unchanged</div>
+                <table className="grid"><thead><tr><th>Finding</th><th>Original check</th><th>Valid control</th><th>Result</th></tr></thead><tbody>
+                  {snap.events.filter((e) => e.type === 'retest.finished' || e.type === 'retest.blocked').map((e) => (
+                    <tr key={e.seq}><td>{e.payload.title ?? e.payload.findingId}</td><td><StatusBadge value={e.payload.outcome ?? 'blocked'} /></td>
+                      <td><StatusBadge value={e.payload.control ?? 'not_run'} /></td><td><StatusBadge value={e.payload.lifecycle ?? 'blocked'} /></td></tr>))}
+                  {!snap.events.some((e) => e.type === 'retest.finished') && <tr><td colSpan={4} className="muted">{active ? 'Replaying saved scenarios…' : 'No retest results recorded.'}</td></tr>}
+                </tbody></table>
+              </div>
+            )}
             {view === 'workflows' && (wfMode === 'list' ? (
               <div style={{ display: 'grid', gap: 14 }}>
                 <div className="card">

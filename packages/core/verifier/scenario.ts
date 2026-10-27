@@ -188,12 +188,23 @@ export async function replayScenario(s: Scenario, env: ReplayEnv): Promise<Repla
     if (s.kind === 'cross_account_read') {
       const marker = `OH${randomBytes(4).toString('hex').toUpperCase()}`;
       const pageA = await open(s.device, 'A', s.auth);
+      // Record links on the list before creating, so the new record can be found even when the list
+      // does not display the field that carries the marker.
+      const listUrl = new URL(s.listPath, env.origin).toString();
+      const recordLinks = async () => new Set(await pageA.locator('main a[href], table a[href]').evaluateAll((els) => els.map((e) => (e as HTMLAnchorElement).href)));
+      await pageA.goto(listUrl, { waitUntil: 'domcontentloaded' });
+      const before = await recordLinks();
       await fillAndSubmit(pageA, env.origin, s.create, { ...env.identity(), marker });
-      await pageA.goto(new URL(s.listPath, env.origin).toString(), { waitUntil: 'domcontentloaded' });
+      await pageA.goto(listUrl, { waitUntil: 'domcontentloaded' });
       const row = pageA.locator('tr', { hasText: marker });
-      const link = (await row.count()) ? row.first().locator('a[href]').first() : pageA.locator('a[href]', { hasText: marker }).first();
-      if (await link.count() === 0) throw new ReplayBlocked('could not find a link to the created record');
-      const recordUrl = new URL((await link.getAttribute('href'))!, env.origin);
+      let href: string | null = null;
+      if (await row.count()) href = await row.first().locator('a[href]').first().getAttribute('href');
+      if (!href) {
+        const added = [...(await recordLinks())].filter((h) => !before.has(h));
+        if (added.length === 1) href = added[0]!;
+      }
+      if (!href) throw new ReplayBlocked('could not find a link to the created record');
+      const recordUrl = new URL(href, env.origin);
       if (recordUrl.origin !== new URL(env.origin).origin) throw new ReplayBlocked('record link leaves the verified origin');
       await pageA.goto(recordUrl.toString(), { waitUntil: 'domcontentloaded' });
       const ownerSees = (await pageA.locator('body').innerText()).includes(marker);

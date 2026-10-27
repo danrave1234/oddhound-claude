@@ -1,0 +1,77 @@
+{
+  "run": {
+    "status": "completed",
+    "stop_reason": null,
+    "sandbox_verdict": "sandbox_on",
+    "browser_state": "terminated",
+    "provider": "test-double",
+    "model": "heuristic-planner"
+  },
+  "seconds": 77,
+  "actions": [
+    {
+      "state": "succeeded",
+      "n": 46
+    }
+  ],
+  "workflows": [
+    {
+      "name": "Registration",
+      "status": "completed"
+    },
+    {
+      "name": "Create booking",
+      "status": "completed"
+    },
+    {
+      "name": "Booking validation",
+      "status": "testing"
+    },
+    {
+      "name": "Edit and cancel booking",
+      "status": "completed"
+    },
+    {
+      "name": "Mobile booking form",
+      "status": "completed"
+    }
+  ],
+  "graph": {
+    "states": 14,
+    "transitions": 18
+  }
+}
+┌─────────┬──────┬─────────────────────────────┬──────────────┬───────────┬───────────────────────────────────────────────────────────────┐
+│ (index) │ rule │ category                    │ verification │ lifecycle │ title                                                         │
+├─────────┼──────┼─────────────────────────────┼──────────────┼───────────┼───────────────────────────────────────────────────────────────┤
+│ 0       │ null │ 'configuration_observation' │ 'verified'   │ null      │ 'No Content-Security-Policy on HTML pages'                    │
+│ 1       │ null │ 'configuration_observation' │ 'verified'   │ null      │ 'Pages can be framed by other sites'                          │
+│ 2       │ 'R1' │ 'verified_issue'            │ 'verified'   │ 'open'    │ 'A booking with a party size of 0 is accepted'                │
+│ 3       │ 'R2' │ 'verified_issue'            │ 'verified'   │ 'open'    │ 'A booking with a blank (spaces only) guest name is accepted' │
+│ 4       │ 'R4' │ 'verified_issue'            │ 'verified'   │ 'open'    │ "A second account can open another account's booking"         │
+│ 5       │ 'R5' │ 'verified_issue'            │ 'verified'   │ 'open'    │ 'On a phone the Book button is covered and cannot be pressed' │
+└─────────┴──────┴─────────────────────────────┴──────────────┴───────────┴───────────────────────────────────────────────────────────────┘
+PASS  discovery run completed (status=completed, reason=null)
+PASS  browser destroyed and confirmed after the run
+PASS  seeded defect for R1 found and independently verified
+PASS  seeded defect for R2 found and independently verified
+PASS  seeded defect for R4 found and independently verified
+PASS  seeded defect for R5 found and independently verified
+PASS  past-date control (R3) is not reported as a defect
+PASS  header/cookie configuration observations recorded separately
+PASS  registration discovered and completed (sign-up recorded by Oddhound)
+PASS  workflow graph has observed states and transitions
+PASS  scope events recorded
+┌─────────┬──────────────────────────────────────────────────────┬──────────┬───────────┬───────────┐
+│ (index) │ title                                                │ outcome  │ control   │ lifecycle │
+├─────────┼──────────────────────────────────────────────────────┼──────────┼───────────┼───────────┤
+│ 0       │ 'A booking with a party size of 0 is accepted'       │ 'passed' │ 'passed'  │ 'fixed'   │
+│ 1       │ 'A booking with a blank (spaces only) guest name is' │ 'passed' │ 'passed'  │ 'fixed'   │
+│ 2       │ "A second account can open another account's bookin" │ 'passed' │ 'not_run' │ 'fixed'   │
+│ 3       │ 'On a phone the Book button is covered and cannot b' │ 'passed' │ 'not_run' │ 'fixed'   │
+└─────────┴──────────────────────────────────────────────────────┴──────────┴───────────┴───────────┘
+PASS  retest run completed (status=completed)
+PASS  every verified finding passes its unchanged assertion on the fixed build (and controls pass)
+PASS  retest on the unfixed build keeps every finding open (no false "fixed")
+
+ALL E2E CHECKS PASSED

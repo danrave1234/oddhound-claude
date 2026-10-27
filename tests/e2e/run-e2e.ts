@@ -83,7 +83,8 @@ try {
   }
   expect(!findings.some((f) => f.rule_id === 'R3' && f.verification === 'verified'), 'past-date control (R3) is not reported as a defect');
   expect(findings.some((f) => f.category === 'configuration_observation'), 'header/cookie configuration observations recorded separately');
-  expect(workflows.some((w) => w.name === 'Registration' && w.status === 'completed'), 'registration workflow discovered and completed');
+  const recipe = (await db.query(`SELECT 1 FROM run_events WHERE run_id = $1 AND type = 'recipe.recorded'`, [runId])).rowCount;
+  expect(Boolean(recipe) && workflows.some((w) => /regist|sign.?up/i.test(w.name) && w.status === 'completed'), 'registration discovered and completed (sign-up recorded by Oddhound)');
   expect(Number(graph.states) >= 5 && Number(graph.transitions) >= 4, 'workflow graph has observed states and transitions');
   expect(!scope.some((s) => /lab\/reset/.test(JSON.stringify(s.payload))) || true, 'scope events recorded');
 

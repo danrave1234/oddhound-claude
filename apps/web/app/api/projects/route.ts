@@ -9,6 +9,7 @@ const Body = z.object({
   origin: z.string().trim().min(8).max(300),
   environment: z.enum(['staging', 'production']),
   description: z.string().trim().max(1000).default(''),
+  stack: z.string().trim().max(60).regex(/^[\w .@/+-]*$/).default(''),
 });
 
 export async function POST(req: Request) {
@@ -27,8 +28,8 @@ export async function POST(req: Request) {
   if (isIP(host) && !isDialAllowed(host, Number(u.port || (u.protocol === 'https:' ? 443 : 80)), lab).allowed) {
     return json({ error: 'Private or internal addresses cannot be scanned.' }, 400);
   }
-  const p = await db().query<{ id: string }>('INSERT INTO projects (owner_id, name, origin, environment, description) VALUES ($1,$2,$3,$4,$5) RETURNING id',
-    [user.id, parsed.data.name, origin, parsed.data.environment, parsed.data.description]);
+  const p = await db().query<{ id: string }>('INSERT INTO projects (owner_id, name, origin, environment, description, stack) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
+    [user.id, parsed.data.name, origin, parsed.data.environment, parsed.data.description, parsed.data.stack]);
   const projectId = p.rows[0]!.id;
   await db().query('INSERT INTO site_verifications (project_id, owner_id, origin, revision, token) VALUES ($1,$2,$3,1,$4)', [projectId, user.id, origin, newVerificationToken()]);
   await db().query(`INSERT INTO audit_log (actor, action, origin, detail) VALUES ($1,'project_created',$2,$3)`, [`user:${user.id}`, origin, JSON.stringify({ projectId })]);

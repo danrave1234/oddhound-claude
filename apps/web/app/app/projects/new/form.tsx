@@ -12,7 +12,7 @@ export function NewProjectForm() {
     setBusy(true); setError(null);
     const f = new FormData(e.currentTarget);
     const res = await fetch('/api/projects', { method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: f.get('name'), origin: f.get('origin'), environment: env, description: f.get('description') }) });
+      body: JSON.stringify({ name: f.get('name'), origin: f.get('origin'), environment: env, description: f.get('description'), stack: f.get('stack') ?? '' }) });
     const body = await res.json().catch(() => ({}));
     if (res.ok) router.push(`/app/projects/${body.projectId}`);
     else { setError(body.error ?? 'Could not create the project.'); setBusy(false); }
@@ -33,6 +33,8 @@ export function NewProjectForm() {
           : 'Staging with synthetic data is recommended: Oddhound can register test accounts and create, edit and cancel test records.'}</small>
       </div>
       <label className="field"><span>What does the site do? (shown to the agent)</span><textarea className="textarea" name="description" maxLength={1000} placeholder="Visitors create an account, book a table, then view, edit or cancel bookings." /></label>
+      <label className="field"><span>Main framework (optional)</span><input className="input" name="stack" maxLength={60} placeholder="next.js" />
+        <small className="muted">Only used to attach version-aware documentation to fix briefs. Leave empty and briefs stay framework-neutral.</small></label>
       {error && <p role="alert" style={{ color: 'var(--bad)', margin: 0 }}>{error}</p>}
       <div><button className="btn btn-primary" disabled={busy}>{busy ? 'Creating…' : 'Continue to verification'}</button></div>
     </form>

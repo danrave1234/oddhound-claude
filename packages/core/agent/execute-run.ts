@@ -333,6 +333,10 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
             const signOut = o.elements.find((e) => /log ?out|sign ?out/i.test(e.label));
             recorded.auth = { kind: 'register', path: pendingAuth.path, fields: pendingAuth.fields, submit: clickedLabel, successText: signOut?.label ?? o.headings[0] ?? o.title };
             await ev('recipe.recorded', { kind: 'register', path: pendingAuth.path, fields: Object.keys(pendingAuth.fields), successText: recorded.auth.successText });
+            // Oddhound itself observed a completed sign-up, so it records the workflow (not just the model's naming).
+            await db.query(`INSERT INTO workflows (run_id, name, status, summary) VALUES ($1,'Registration','completed',$2)
+              ON CONFLICT (run_id, name) DO UPDATE SET status = 'completed', updated_at = now()`, [runId, `Signed up a synthetic account at ${pendingAuth.path} and reached "${recorded.auth.successText}" (recorded by Oddhound).`]);
+            await ev('workflow.updated', { name: 'Registration', status: 'completed', summary: `Sign-up at ${pendingAuth.path} recorded by Oddhound` });
           }
           pendingAuth = null;
         }
@@ -525,7 +529,10 @@ function groundFields(fields: Record<string, string>, observed: Set<string> | un
 
 export function groundCandidate(c: Candidate, recorded: Recorded): Candidate {
   const s = structuredClone(c.scenario) as Scenario;
-  if ('auth' in s && s.auth && recorded.auth) s.auth = recorded.auth; // the registration that actually worked
+  // Use the registration that actually worked. If the model omitted sign-in but Oddhound recorded one,
+  // the form was observed while signed in, so the replay must sign in too.
+  if (recorded.auth && s.kind !== 'cross_account_read') s.auth = recorded.auth;
+  else if (recorded.auth && s.auth) s.auth = recorded.auth;
   if (s.kind === 'form_rule') {
     const observed = recorded.labelsByPath.get(s.form.path);
     s.form.fields = groundFields(s.form.fields, observed);
@@ -550,7 +557,12 @@ export function scenarioProblems(c: Candidate, recorded: Recorded): string[] {
     const seen = recorded.controlsByPath.get(path);
     if (seen && ![...seen].some((l) => l.toLowerCase().includes(text.toLowerCase()))) problems.push(`No button or link ${JSON.stringify(text)} seen on ${path}. Controls seen there: ${[...seen].slice(0, 15).map((l) => JSON.stringify(l)).join(', ')}.`);
   };
-  if (s.kind === 'form_rule') { checkFields(s.form.path, s.form.fields); checkControl(s.form.path, s.form.submit); const d = scenarioDefect(s); if (d) problems.push(d); }
+  if (s.kind === 'form_rule') {
+    checkFields(s.form.path, s.form.fields); checkControl(s.form.path, s.form.submit);
+    const d = scenarioDefect(s); if (d) problems.push(d);
+    // A rejected-input rule needs a valid neighbouring case, so a form that rejects everything is not mistaken for a fix.
+    if (s.expectation === 'rejected' && !c.controlValues?.[s.testedField]) problems.push(`Provide control_values with a VALID value for ${JSON.stringify(s.testedField)} that must still be accepted.`);
+  }
   if (s.kind === 'cross_account_read') { checkFields(s.create.path, s.create.fields); checkControl(s.create.path, s.create.submit); }
   if (s.kind === 'mobile_reachability') { if (!recorded.controlsByPath.has(s.path)) problems.push(`Path ${s.path} was never observed in this run.`); else checkControl(s.path, s.control); }
   if ('auth' in s && s.auth && !recorded.auth) checkFields(s.auth.path, s.auth.fields);

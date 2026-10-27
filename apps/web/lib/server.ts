@@ -37,24 +37,32 @@ export async function anonymousPrincipal(): Promise<string> {
   return `anon:${id}:${ip}`;
 }
 
-type RunAccessRow = { owner_id: string | null; mode: string; principal: string };
+type RunAccessRow = { owner_id: string | null; mode: string; principal: string; parent_mode?: string | null };
 
 /** Demo-target runs contain synthetic data only and are public; everything else is owner/admin only. */
 export function canViewRun(user: AppUser | null, run: RunAccessRow): boolean {
   if (run.mode === 'demo_target') return true;
+  if (run.mode === 'retest' && run.parent_mode === 'demo_target') return true; // retest of a public demo run
   return Boolean(user && (user.isAdmin || run.owner_id === user.id));
 }
 
 export async function canControlRun(user: AppUser | null, run: RunAccessRow): Promise<boolean> {
   if (user && (user.isAdmin || (run.owner_id && run.owner_id === user.id))) return true;
-  if (run.mode === 'demo_target' && run.principal.startsWith('anon:')) return run.principal.split(':')[1] === (await anonymousPrincipal()).split(':')[1];
+  // Demo runs (and their retests) have no owner; whoever started them controls them.
+  if (user && (run.principal === `user:${user.id}` || run.principal.startsWith(`user:${user.id}:`))) return true;
+  if (run.principal.startsWith('anon:')) {
+    const jar = await cookies();
+    const mine = jar.get('oh_anon')?.value;
+    return Boolean(mine) && run.principal.split(':')[1] === mine;
+  }
   return false;
 }
 
 export async function loadRunForAccess(runId: string) {
   if (!/^[0-9a-f-]{36}$/.test(runId)) return null;
   const r = await db().query<RunAccessRow & { id: string; project_id: string | null; status: string; origin: string; parent_run_id: string | null }>(
-    'SELECT id, owner_id, mode, principal, project_id, status, origin, parent_run_id FROM runs WHERE id = $1', [runId]);
+    `SELECT r.id, r.owner_id, r.mode, r.principal, r.project_id, r.status, r.origin, r.parent_run_id, p.mode AS parent_mode
+     FROM runs r LEFT JOIN runs p ON p.id = r.parent_run_id WHERE r.id = $1`, [runId]);
   return r.rows[0] ?? null;
 }
 
