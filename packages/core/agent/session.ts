@@ -106,6 +106,11 @@ export class RunSession {
     return loc;
   }
 
+  /** The visible label of a ref in the observation the model acted on (for recording recipes). */
+  labelOf(ref: string): string | null {
+    return (this.#turnObservation ?? this.lastObservation)?.elements.find((e) => e.ref === ref)?.label ?? null;
+  }
+
   describe(ref: string): string {
     const el = (this.#turnObservation ?? this.lastObservation)?.elements.find((e) => e.ref === ref);
     return el ? `${el.kind} "${el.label}"` : ref;

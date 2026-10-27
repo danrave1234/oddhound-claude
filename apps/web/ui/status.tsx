@@ -21,6 +21,7 @@ const MAP: Record<string, { label: string; tone: Tone; icon: IconName }> = {
   open: { label: 'Open', tone: 'bad', icon: 'bug' }, fixed: { label: 'Fixed', tone: 'ok', icon: 'check' }, regressed: { label: 'Regressed', tone: 'bad', icon: 'fail' },
   verified_issue: { label: 'Verified issue', tone: 'bad', icon: 'bug' }, configuration_observation: { label: 'Configuration observation', tone: 'info', icon: 'shield' },
   needs_review: { label: 'Needs review', tone: 'warn', icon: 'question' }, suggestion: { label: 'Suggestion', tone: 'muted', icon: 'eye' },
+  observed: { label: 'Observed', tone: 'info', icon: 'eye' },
   // connection
   live: { label: 'Live', tone: 'ok', icon: 'dot' }, reconnecting: { label: 'Reconnecting', tone: 'warn', icon: 'retest' }, stale: { label: 'Stale', tone: 'warn', icon: 'alert' },
 };
@@ -30,5 +31,9 @@ export function StatusBadge({ value }: { value: string | null | undefined }) {
   const s = MAP[value] ?? { label: value.replace(/_/g, ' '), tone: 'muted' as Tone, icon: 'dot' as IconName };
   return <span className={`badge badge-${s.tone}`}><Icon name={s.icon} />{s.label}</span>;
 }
+
+/** Finding status to display: configuration observations are observed facts, not verified defects. */
+export const findingStatus = (f: { category: string; verification: string; lifecycle: string | null }) =>
+  f.category === 'configuration_observation' ? 'observed' : (f.lifecycle ?? f.verification);
 
 export const statusLabel = (v: string) => MAP[v]?.label ?? v.replace(/_/g, ' ');

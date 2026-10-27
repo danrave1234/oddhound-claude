@@ -156,21 +156,16 @@ export async function refundIfNeverStarted(db: Db, runId: string): Promise<void>
   await db.query(`UPDATE runs SET counted_against_quota = false WHERE id = $1 AND started_at IS NULL`, [runId]);
 }
 
+/** Durable, gap-free, per-run ordered events. The sequence comes from an atomic counter on the run row. */
 export async function appendEvent(db: Db, runId: string, type: string, payload: Record<string, unknown> = {}): Promise<number> {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    try {
-      const r = await db.query<{ seq: number }>(
-        `INSERT INTO run_events (run_id, seq, type, payload)
-         SELECT $1, COALESCE(MAX(seq), 0) + 1, $2, $3 FROM run_events WHERE run_id = $1 RETURNING seq`,
-        [runId, type, JSON.stringify(payload)]);
-      const seq = r.rows[0]!.seq;
-      await db.query('SELECT pg_notify($1, $2)', ['run_events', JSON.stringify({ runId, seq })]);
-      return seq;
-    } catch (e) {
-      if ((e as { code?: string }).code !== '23505') throw e; // unique_violation: concurrent append, retry
-    }
-  }
-  throw new Error('could not append event');
+  const r = await db.query<{ seq: number }>(
+    `WITH next AS (UPDATE runs SET event_seq = event_seq + 1 WHERE id = $1 RETURNING event_seq)
+     INSERT INTO run_events (run_id, seq, type, payload) SELECT $1, event_seq, $2, $3 FROM next RETURNING seq`,
+    [runId, type, JSON.stringify(payload)]);
+  const seq = r.rows[0]?.seq;
+  if (seq === undefined) throw new Error('run not found for event');
+  await db.query('SELECT pg_notify($1, $2)', ['run_events', JSON.stringify({ runId, seq })]);
+  return seq;
 }
 
 export async function eventsAfter(db: Db, runId: string, afterSeq: number, limit = 500) {

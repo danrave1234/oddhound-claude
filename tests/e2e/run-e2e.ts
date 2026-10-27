@@ -101,7 +101,7 @@ try {
   // --- Retest against the still-vulnerable build must NOT mark anything fixed -------------------
   const negative = await admitRun(db, { principal: `${principal}:negative`, ownerId: null, projectId: null, mode: 'retest', contract: demoTargetContract(vulnerable), spendAccount: 'development', parentRunId: runId });
   if (negative.ok) {
-    await db.query(`UPDATE findings SET lifecycle = 'open' WHERE run_id = $1 AND verification = 'verified'`, [runId]);
+    await db.query(`UPDATE findings SET lifecycle = 'open' WHERE run_id = $1 AND verification = 'verified' AND category = 'verified_issue'`, [runId]);
     await executeRun(deps, negative.runId);
     const still = (await db.query(`SELECT lifecycle FROM findings WHERE run_id = $1 AND category = 'verified_issue' AND verification = 'verified'`, [runId])).rows;
     expect(still.every((f) => f.lifecycle === 'open'), 'retest on the unfixed build keeps every finding open (no false "fixed")');

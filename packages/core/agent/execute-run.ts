@@ -23,7 +23,7 @@ import { priceFor, inputTokenBound, reservationMicros, actualMicros } from '../p
 import { RunSession } from './session.ts';
 import { TOOL_DEFINITIONS, ToolArgs, BROWSER_TOOLS, boundaryValues, type ToolName } from './tools.ts';
 import { systemPrompt } from './prompt.ts';
-import { controlFor, newReplaySessions, replayScenario, scenarioHash, type ReplayEnv, type Scenario } from '../verifier/scenario.ts';
+import { controlFor, newReplaySessions, replayScenario, scenarioDefect, scenarioHash, type AuthRecipe, type ReplayEnv, type Scenario } from '../verifier/scenario.ts';
 
 export type ExecuteDeps = {
   db: Db;
@@ -90,6 +90,17 @@ export async function executeRun(deps: ExecuteDeps, runId: string): Promise<RunS
       if (!result.verified) { await refundIfNeverStarted(db, runId); await finish('blocked', `ownership_not_verified:${result.reason}`); return await done(); }
     }
 
+    // The demo target is shared: reset it to a clean, known state before each demo run or retest.
+    // The reset URL and token are operator configuration, never user input (SELF-11).
+    if (run.mode === 'demo_target' || (run.mode === 'retest' && contract.target.verification.kind === 'demo_target')) {
+      const resetUrl = contract.target.origin === process.env.DEMO_TARGET_FIXED_ORIGIN ? process.env.DEMO_TARGET_FIXED_RESET_URL : process.env.DEMO_TARGET_RESET_URL;
+      if (resetUrl) {
+        const ok = await fetch(resetUrl, { method: 'POST', headers: { 'x-lab-reset-token': process.env.ODDHOUND_FIXTURE_RESET_TOKEN ?? '' }, signal: AbortSignal.timeout(5_000) }).then((r) => r.ok, () => false);
+        await ev(ok ? 'fixture.reset' : 'fixture.reset_failed', { target: 'demo' });
+        if (!ok) { await finish('blocked', 'demo_target_reset_failed'); return await done(); }
+      }
+    }
+
     if (run.mode === 'retest') {
       await executeRetest(deps, run, contract, generation, ev, (b) => { browser = b; });
       return await done();
@@ -121,7 +132,8 @@ export async function executeRun(deps: ExecuteDeps, runId: string): Promise<RunS
 
     // 4. Exploration with the Meta model.
     const candidates: Candidate[] = [];
-    const loop = await agentLoop({ deps, runId, generation, contract, run, provider, price, session, ev, abort, candidates });
+    const recorded: Recorded = { auth: null, labelsByPath: new Map(), controlsByPath: new Map() };
+    const loop = await agentLoop({ deps, runId, generation, contract, run, provider, price, session, ev, abort, candidates, recorded });
     if (loop.stopReason) stopReason = loop.stopReason;
 
     // 5. Independent verification of every candidate (fresh contexts, fresh identities).
@@ -175,11 +187,15 @@ function redactUrl(raw: string): string {
 type LoopArgs = {
   deps: ExecuteDeps; runId: string; generation: number; contract: RunContract; run: RunRow; provider: ChatProvider;
   price: NonNullable<ReturnType<typeof priceFor>>; session: RunSession; ev: (t: string, p?: Record<string, unknown>) => Promise<number>;
-  abort: AbortController; candidates: Candidate[];
+  abort: AbortController; candidates: Candidate[]; recorded: Recorded;
 };
 
+/** What Oddhound itself observed during exploration, used to ground the model's scenario recipes. */
+export type Recorded = { auth: AuthRecipe | null; labelsByPath: Map<string, Set<string>>; controlsByPath: Map<string, Set<string>> };
+
 async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: string }> {
-  const { deps: { db }, runId, generation, contract, provider, price, session, ev, abort, candidates } = a;
+  const { deps: { db }, runId, generation, contract, provider, price, session, ev, abort, candidates, recorded } = a;
+  let pendingAuth: { path: string; fields: Record<string, string> } | null = null;
   const messages: ChatMessage[] = [
     { role: 'system', content: systemPrompt(contract) },
     { role: 'user', content: `Begin. You are actor A on desktop, on ${contract.target.origin}/. Start with observe.` },
@@ -192,6 +208,13 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
   let finished: string | undefined;
 
   const recordState = async (o: Observation, label: string, actionId: string | null) => {
+    const path = new URL(o.url).pathname;
+    const labels = recorded.labelsByPath.get(path) ?? new Set<string>();
+    for (const e of o.elements) if ((e.kind === 'input' || e.kind === 'textarea' || e.kind === 'select') && e.label) labels.add(e.label);
+    recorded.labelsByPath.set(path, labels);
+    const controls = recorded.controlsByPath.get(path) ?? new Set<string>();
+    for (const e of o.elements) if ((e.kind === 'button' || e.kind === 'link') && e.label) controls.add(e.label);
+    recorded.controlsByPath.set(path, controls);
     const { fingerprint, route } = stateFingerprint(o, session.actor, session.device);
     const ins = await db.query<{ id: string; inserted: boolean }>(
       `INSERT INTO graph_states (run_id, fingerprint, route, title, actor, device) VALUES ($1,$2,$3,$4,$5,$6)
@@ -272,7 +295,15 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
       }
       case 'report_candidate': {
         const known = contract.rules.some((r) => r.id === args.rule_id);
-        candidates.push({ title: args.title, ruleId: args.rule_id, impact: args.impact, observed: args.observed, scenario: args.scenario, controlValues: args.control_values, actor: session.actor, device: session.device });
+        // Ground the scenario in what Oddhound actually observed, then reject anything still unknown,
+        // telling the model the real labels so it can correct the report in its next turn.
+        const grounded = groundCandidate({ title: args.title, ruleId: args.rule_id, impact: args.impact, observed: args.observed, scenario: args.scenario, controlValues: args.control_values, actor: session.actor, device: session.device }, recorded);
+        const problems = scenarioProblems(grounded, recorded);
+        if (problems.length) {
+          await ev('finding.candidate_rejected', { title: args.title, problems });
+          return { text: `Candidate NOT recorded. Fix and call report_candidate again:\n- ${problems.join('\n- ')}` };
+        }
+        candidates.push(grounded);
         await ev('finding.candidate', { title: args.title, ruleId: args.rule_id, kind: args.scenario.kind, knownRule: known });
         return { text: known ? 'Candidate recorded. Oddhound will replay it independently after exploration.' : `Recorded as needs-review: "${args.rule_id}" is not one of the owner rules, so it cannot be verified against a rule.` };
       }
@@ -293,13 +324,31 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
       case 'click': {
         const loc = await session.locate(args.ref).catch((e: Error) => e);
         if (loc instanceof Error) return { text: loc.message };
-        return { text: await runBrowserAction(name, args, `Clicked ${session.describe(args.ref)}`, async () => { await loc.click({ timeout: 5_000 }); await (await session.page()).waitForLoadState('domcontentloaded'); }) };
+        const clickedLabel = session.labelOf(args.ref);
+        const text = await runBrowserAction(name, args, `Clicked ${session.describe(args.ref)}`, async () => { await loc.click({ timeout: 5_000 }); await (await session.page()).waitForLoadState('domcontentloaded'); });
+        if (pendingAuth && clickedLabel && Object.values(pendingAuth.fields).includes('{password}') && !recorded.auth) {
+          const o = session.lastObservation;
+          const landed = o ? new URL(o.url).pathname : pendingAuth.path;
+          if (o && landed !== pendingAuth.path && !o.alerts.some((a) => /error|invalid|required|already/i.test(a))) {
+            const signOut = o.elements.find((e) => /log ?out|sign ?out/i.test(e.label));
+            recorded.auth = { kind: 'register', path: pendingAuth.path, fields: pendingAuth.fields, submit: clickedLabel, successText: signOut?.label ?? o.headings[0] ?? o.title };
+            await ev('recipe.recorded', { kind: 'register', path: pendingAuth.path, fields: Object.keys(pendingAuth.fields), successText: recorded.auth.successText });
+          }
+          pendingAuth = null;
+        }
+        return { text };
       }
       case 'fill': {
         if ([...secrets].some((s) => args.value.includes(s))) return { text: 'Use fill_credential for secrets.' };
         const loc = await session.locate(args.ref).catch((e: Error) => e);
         if (loc instanceof Error) return { text: loc.message };
         if ((await loc.getAttribute('type')) === 'password') return { text: 'Use fill_credential for password fields.' };
+        const ident = identities.find((i) => i.name === args.value || i.email === args.value);
+        const label = session.labelOf(args.ref);
+        if (ident && label) {
+          pendingAuth ??= { path: new URL((await session.page()).url()).pathname, fields: {} };
+          pendingAuth.fields[label] = ident.name === args.value ? '{name}' : '{email}';
+        }
         return { text: await runBrowserAction(name, args, `Typed ${JSON.stringify(args.value.slice(0, 40))} into ${session.describe(args.ref)}`, async () => { await loc.fill(args.value, { timeout: 5_000 }); }) };
       }
       case 'fill_credential': {
@@ -311,7 +360,46 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
         const loc = await session.locate(args.ref).catch((e: Error) => e);
         if (loc instanceof Error) return { text: loc.message };
         const value = args.field === 'password' ? cred.secret : cred.username;
+        const credLabel = session.labelOf(args.ref);
+        if (identities.some((i) => i.ref === args.credential_ref) && credLabel) {
+          pendingAuth ??= { path: new URL((await session.page()).url()).pathname, fields: {} };
+          pendingAuth.fields[credLabel] = args.field === 'password' ? '{password}' : '{email}';
+        }
         return { text: await runBrowserAction(name, { ref: args.ref, credential_ref: args.credential_ref, field: args.field }, `Filled ${args.field} for ${cred.label} into ${session.describe(args.ref)}`, async () => { await loc.fill(value, { timeout: 5_000 }); }) };
+      }
+      case 'fill_form': {
+        // Several fills as ONE ledgered action (spec §8: batch safe fills; the submit stays a separate click).
+        const steps: { label: string | null; loc: Awaited<ReturnType<RunSession['locate']>>; value: string; shown: string }[] = [];
+        const page = await session.page();
+        for (const f of args.fields as ({ ref: string; value: string } | { ref: string; credential_ref: string; field: 'username' | 'password' })[]) {
+          const loc = await session.locate(f.ref).catch((e: Error) => e);
+          if (loc instanceof Error) return { text: loc.message };
+          const label = session.labelOf(f.ref);
+          if ('credential_ref' in f) {
+            const allowed = identities.some((i) => i.ref === f.credential_ref) || contract.accounts.some((acc) => acc.ref === f.credential_ref);
+            const cred = allowed ? await resolveCredential(db, f.credential_ref) : null;
+            if (!cred) return { text: `Unknown credential reference ${f.credential_ref} for this run.` };
+            secrets.add(cred.secret);
+            if (identities.some((i) => i.ref === f.credential_ref) && label) {
+              pendingAuth ??= { path: new URL(page.url()).pathname, fields: {} };
+              pendingAuth.fields[label] = f.field === 'password' ? '{password}' : '{email}';
+            }
+            steps.push({ label, loc, value: f.field === 'password' ? cred.secret : cred.username, shown: `${label ?? f.ref}=[${f.field} from ${cred.label}]` });
+          } else {
+            if ([...secrets].some((x) => f.value.includes(x))) return { text: 'Use credential_ref entries for secrets.' };
+            if ((await loc.getAttribute('type')) === 'password') return { text: 'Use a credential_ref entry for password fields.' };
+            const ident = identities.find((i) => i.name === f.value || i.email === f.value);
+            if (ident && label) {
+              pendingAuth ??= { path: new URL(page.url()).pathname, fields: {} };
+              pendingAuth.fields[label] = ident.name === f.value ? '{name}' : '{email}';
+            }
+            steps.push({ label, loc, value: f.value, shown: `${label ?? f.ref}=${JSON.stringify(f.value.slice(0, 30))}` });
+          }
+        }
+        const ledgerArgs = { fields: (args.fields as Record<string, unknown>[]).map((f) => ('credential_ref' in f ? { ref: f.ref, credential_ref: f.credential_ref, field: f.field } : f)) };
+        return { text: await runBrowserAction(name, ledgerArgs, `Filled ${steps.map((x) => x.shown).join(', ')}`.slice(0, 300), async () => {
+          for (const st of steps) await st.loc.fill(st.value, { timeout: 5_000 });
+        }) };
       }
       case 'select_option': {
         const loc = await session.locate(args.ref).catch((e: Error) => e);
@@ -419,6 +507,54 @@ function compactHistory(messages: ChatMessage[]): void {
   // Older screenshots are dropped entirely (they are stored as artifacts).
   const userImgs = messages.map((m, i) => (m.role === 'user' && Array.isArray(m.content) ? i : -1)).filter((i) => i >= 0);
   for (const i of userImgs.slice(0, -1)) messages[i] = { role: 'user', content: '[older screenshot omitted]' };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Grounding: replace what the model remembered with what Oddhound actually recorded.
+
+function closestLabel(key: string, observed: Set<string> | undefined): string {
+  if (!observed || observed.has(key)) return key;
+  const k = key.toLowerCase().trim();
+  const hits = [...observed].filter((l) => { const x = l.toLowerCase(); return x === k || x.includes(k) || k.includes(x); });
+  return hits.length === 1 ? hits[0]! : key; // only substitute when the match is unambiguous
+}
+
+function groundFields(fields: Record<string, string>, observed: Set<string> | undefined): Record<string, string> {
+  return Object.fromEntries(Object.entries(fields).map(([k, v]) => [closestLabel(k, observed), v]));
+}
+
+export function groundCandidate(c: Candidate, recorded: Recorded): Candidate {
+  const s = structuredClone(c.scenario) as Scenario;
+  if ('auth' in s && s.auth && recorded.auth) s.auth = recorded.auth; // the registration that actually worked
+  if (s.kind === 'form_rule') {
+    const observed = recorded.labelsByPath.get(s.form.path);
+    s.form.fields = groundFields(s.form.fields, observed);
+    s.testedField = closestLabel(s.testedField, observed);
+  }
+  if (s.kind === 'cross_account_read') { s.create.fields = groundFields(s.create.fields, recorded.labelsByPath.get(s.create.path)); }
+  const controlValues = c.controlValues && s.kind === 'form_rule' ? groundFields(c.controlValues, recorded.labelsByPath.get(s.form.path)) : c.controlValues;
+  return { ...c, scenario: s, controlValues };
+}
+
+/** Field labels, controls and paths a scenario refers to must have been observed during this run. */
+export function scenarioProblems(c: Candidate, recorded: Recorded): string[] {
+  const s = c.scenario;
+  const problems: string[] = [];
+  const checkFields = (path: string, fields: Record<string, string>) => {
+    const seen = recorded.labelsByPath.get(path);
+    if (!seen) { problems.push(`Path ${path} was never observed in this run. Use the exact path you visited.`); return; }
+    const unknown = Object.keys(fields).filter((k) => !seen.has(k));
+    if (unknown.length) problems.push(`Field label(s) ${unknown.map((u) => JSON.stringify(u)).join(', ')} not seen on ${path}. Labels seen there: ${[...seen].map((l) => JSON.stringify(l)).join(', ')}.`);
+  };
+  const checkControl = (path: string, text: string) => {
+    const seen = recorded.controlsByPath.get(path);
+    if (seen && ![...seen].some((l) => l.toLowerCase().includes(text.toLowerCase()))) problems.push(`No button or link ${JSON.stringify(text)} seen on ${path}. Controls seen there: ${[...seen].slice(0, 15).map((l) => JSON.stringify(l)).join(', ')}.`);
+  };
+  if (s.kind === 'form_rule') { checkFields(s.form.path, s.form.fields); checkControl(s.form.path, s.form.submit); const d = scenarioDefect(s); if (d) problems.push(d); }
+  if (s.kind === 'cross_account_read') { checkFields(s.create.path, s.create.fields); checkControl(s.create.path, s.create.submit); }
+  if (s.kind === 'mobile_reachability') { if (!recorded.controlsByPath.has(s.path)) problems.push(`Path ${s.path} was never observed in this run.`); else checkControl(s.path, s.control); }
+  if ('auth' in s && s.auth && !recorded.auth) checkFields(s.auth.path, s.auth.fields);
+  return problems;
 }
 
 // ---------------------------------------------------------------------------------------------

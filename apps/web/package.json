@@ -3,9 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "next dev --port 3310 --hostname 127.0.0.1",
-    "build": "next build",
-    "start": "next start --port 3310 --hostname 127.0.0.1",
+    "dev": "node scripts/next-with-env.mjs dev --port 3310 --hostname 127.0.0.1",
+    "build": "node scripts/next-with-env.mjs build",
+    "start": "node scripts/next-with-env.mjs start --port 3310 --hostname 127.0.0.1",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

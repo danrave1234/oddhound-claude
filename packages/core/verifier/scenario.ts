@@ -30,6 +30,9 @@ export const ScenarioSchema = z.discriminatedUnion('kind', [
     device: z.enum(['desktop', 'mobile']),
     auth: AuthRecipeSchema.optional(),
     form: FormSchema,
+    // The field whose value breaks the rule. The persistence marker must never be placed in it,
+    // because adding the marker would change the very input being tested.
+    testedField: z.string().min(1).max(80),
     // What the owner's rule requires for this input.
     expectation: z.enum(['rejected', 'accepted']),
     // Where accepted records are listed; the verifier looks for the scenario's unique marker there.
@@ -53,6 +56,15 @@ export const ScenarioSchema = z.discriminatedUnion('kind', [
   }),
 ]);
 export type Scenario = z.infer<typeof ScenarioSchema>;
+
+/** Structural soundness checks the schema cannot express. Returns a reason when the scenario is malformed. */
+export function scenarioDefect(s: Scenario): string | null {
+  if (s.kind !== 'form_rule') return null;
+  const tested = s.form.fields[s.testedField];
+  if (tested === undefined) return `testedField "${s.testedField}" is not one of the form fields`;
+  if (tested.includes('{marker}')) return `the marker was placed in the field under test ("${s.testedField}"), which changes the tested input`;
+  return null;
+}
 
 export function scenarioHash(s: Scenario): string {
   return sha256(canonicalJson(s));
@@ -146,7 +158,8 @@ export async function replayScenario(s: Scenario, env: ReplayEnv): Promise<Repla
   try {
     if (s.kind === 'form_rule') {
       const marker = `OH${randomBytes(4).toString('hex').toUpperCase()}`;
-      if (!Object.values(s.form.fields).some((v) => v.includes('{marker}'))) throw new ReplayBlocked('scenario has no {marker} field to detect persistence');
+      const defect = scenarioDefect(s);
+      if (defect) throw new ReplayBlocked(`malformed scenario: ${defect}`);
       const ident = env.identity();
       const page = await open(s.device, s.auth ? 'A' : undefined, s.auth);
       // Persistence is detected two ways: the unique marker appears on the list page, or the list

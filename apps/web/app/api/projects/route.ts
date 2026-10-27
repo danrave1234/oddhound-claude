@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { currentUser, db, json, mayScanVerifiedSites } from '@/lib/server';
 import { canonicalOrigin, newVerificationToken, OriginError } from '@core/verification/ownership.ts';
-import { labProfileFromEnv } from '@core/net/ip-policy.ts';
+import { isIP } from 'node:net';
+import { labProfileFromEnv, isDialAllowed } from '@core/net/ip-policy.ts';
 
 const Body = z.object({
   name: z.string().trim().min(2).max(80),
@@ -17,8 +18,15 @@ export async function POST(req: Request) {
   const parsed = Body.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return json({ error: 'Check the form fields.', issues: parsed.error.issues }, 400);
   let origin: string;
-  try { origin = canonicalOrigin(parsed.data.origin, { allowHttp: Boolean(labProfileFromEnv()) }); }
+  const lab = labProfileFromEnv();
+  try { origin = canonicalOrigin(parsed.data.origin, { allowHttp: Boolean(lab) }); }
   catch (e) { return json({ error: e instanceof OriginError ? e.message : 'Invalid origin' }, 400); }
+  // A literal private/internal address is refused up front (hostnames are checked at every fetch).
+  const u = new URL(origin);
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  if (isIP(host) && !isDialAllowed(host, Number(u.port || (u.protocol === 'https:' ? 443 : 80)), lab).allowed) {
+    return json({ error: 'Private or internal addresses cannot be scanned.' }, 400);
+  }
   const p = await db().query<{ id: string }>('INSERT INTO projects (owner_id, name, origin, environment, description) VALUES ($1,$2,$3,$4,$5) RETURNING id',
     [user.id, parsed.data.name, origin, parsed.data.environment, parsed.data.description]);
   const projectId = p.rows[0]!.id;

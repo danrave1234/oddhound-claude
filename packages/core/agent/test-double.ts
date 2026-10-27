@@ -158,7 +158,7 @@ export class HeuristicTestPlanner implements ChatProvider {
           return { name: 'report_candidate', args: {
             title: 'A booking with a party size of 0 is accepted', rule_id: 'R1', impact: 'medium',
             observed: 'Submitting party size 0 returned to the bookings list with the booking confirmed.',
-            scenario: { kind: 'form_rule', device: 'desktop', auth: this.#auth(), form: { path: this.#formPath, fields: this.#bookingFields({ guest: 'Boundary {marker}', party: '0', date: '{date+7}', notes: '{marker}' }), submit: this.#bookingSubmit }, expectation: 'rejected', listPath: this.#listPath },
+            scenario: { kind: 'form_rule', device: 'desktop', auth: this.#auth(), form: { path: this.#formPath, fields: this.#bookingFields({ guest: 'Boundary {marker}', party: '0', date: '{date+7}', notes: '{marker}' }), submit: this.#bookingSubmit }, testedField: this.#labels.party, expectation: 'rejected', listPath: this.#listPath },
             control_values: { [this.#labels.party!]: '2' },
           } };
         }
@@ -171,7 +171,7 @@ export class HeuristicTestPlanner implements ChatProvider {
           return { name: 'report_candidate', args: {
             title: 'A booking with a blank (spaces only) guest name is accepted', rule_id: 'R2', impact: 'low',
             observed: 'Submitting a guest name of three spaces was accepted and confirmed.',
-            scenario: { kind: 'form_rule', device: 'desktop', auth: this.#auth(), form: { path: this.#formPath, fields: this.#bookingFields({ guest: '   ', party: '2', date: '{date+7}', notes: '{marker}' }), submit: this.#bookingSubmit }, expectation: 'rejected', listPath: this.#listPath },
+            scenario: { kind: 'form_rule', device: 'desktop', auth: this.#auth(), form: { path: this.#formPath, fields: this.#bookingFields({ guest: '   ', party: '2', date: '{date+7}', notes: '{marker}' }), submit: this.#bookingSubmit }, testedField: this.#labels.guest, expectation: 'rejected', listPath: this.#listPath },
             control_values: { [this.#labels.guest!]: 'Valid Guest' },
           } };
         }

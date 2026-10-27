@@ -14,6 +14,10 @@ export const ToolArgs = {
   click: z.object({ ref }),
   fill: z.object({ ref, value: z.string().max(500) }),
   fill_credential: z.object({ ref, credential_ref: z.string().regex(/^cred_[A-Za-z0-9_-]{6,64}$/), field: z.enum(['username', 'password']) }),
+  fill_form: z.object({ fields: z.array(z.union([
+    z.object({ ref, value: z.string().max(500) }),
+    z.object({ ref, credential_ref: z.string().regex(/^cred_[A-Za-z0-9_-]{6,64}$/), field: z.enum(['username', 'password']) }),
+  ])).min(1).max(12) }),
   create_identity: z.object({}),
   select_option: z.object({ ref, value: z.string().max(200) }),
   press_key: z.object({ key: z.enum(['Enter', 'Tab', 'Escape', 'ArrowDown', 'ArrowUp', 'Space']) }),
@@ -34,7 +38,7 @@ export const ToolArgs = {
   finish_run: z.object({ summary: z.string().min(5).max(800) }),
 } as const;
 export type ToolName = keyof typeof ToolArgs;
-export const BROWSER_TOOLS = new Set<ToolName>(['navigate', 'click', 'fill', 'fill_credential', 'select_option', 'press_key', 'scroll', 'go_back', 'set_device', 'use_actor']);
+export const BROWSER_TOOLS = new Set<ToolName>(['navigate', 'click', 'fill', 'fill_credential', 'fill_form', 'select_option', 'press_key', 'scroll', 'go_back', 'set_device', 'use_actor']);
 
 const s = (properties: Record<string, unknown>, required: string[] = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const refProp = { type: 'string', description: 'Element reference from the latest observation, e.g. "e7".' };
@@ -52,6 +56,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   { type: 'function', function: { name: 'click', description: 'Click an element by reference, like a normal user.', parameters: s({ ref: refProp }, ['ref']) } },
   { type: 'function', function: { name: 'fill', description: 'Type a value into an input or textarea. Do not use for passwords.', parameters: s({ ref: refProp, value: { type: 'string' } }, ['ref', 'value']) } },
   { type: 'function', function: { name: 'fill_credential', description: 'Fill a username/email or password field from a credential reference. You never see the secret.', parameters: s({ ref: refProp, credential_ref: { type: 'string' }, field: { type: 'string', enum: ['username', 'password'] } }, ['ref', 'credential_ref', 'field']) } },
+  { type: 'function', function: { name: 'fill_form', description: 'Fill several fields of the current form in one step (does not submit). Each entry is {ref, value} or, for secrets, {ref, credential_ref, field}. Then click the submit button.', parameters: s({ fields: { type: 'array', items: { type: 'object', properties: { ref: refProp, value: { type: 'string' }, credential_ref: { type: 'string' }, field: { type: 'string', enum: ['username', 'password'] } }, required: ['ref'] } } }, ['fields']) } },
   { type: 'function', function: { name: 'create_identity', description: 'Create a new synthetic test identity for registration (limited per run). Returns name, email and a credential_ref for the password.', parameters: s({}) } },
   { type: 'function', function: { name: 'select_option', description: 'Choose an option in a select element.', parameters: s({ ref: refProp, value: { type: 'string' } }, ['ref', 'value']) } },
   { type: 'function', function: { name: 'press_key', description: 'Press a key in the focused element.', parameters: s({ key: { type: 'string', enum: ['Enter', 'Tab', 'Escape', 'ArrowDown', 'ArrowUp', 'Space'] } }, ['key']) } },
@@ -70,7 +75,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         impact: { type: 'string', enum: ['high', 'medium', 'low'] }, observed: { type: 'string', description: 'What you saw, factually' },
         scenario: {
           oneOf: [
-            s({ kind: { const: 'form_rule' }, device: { type: 'string', enum: ['desktop', 'mobile'] }, auth: authRecipe, form, expectation: { type: 'string', enum: ['rejected', 'accepted'] }, listPath: { type: 'string' } }, ['kind', 'device', 'form', 'expectation', 'listPath']),
+            s({ kind: { const: 'form_rule' }, device: { type: 'string', enum: ['desktop', 'mobile'] }, auth: authRecipe, form, testedField: { type: 'string', description: 'Label of the field whose value breaks the rule. Never put {marker} in this field.' }, expectation: { type: 'string', enum: ['rejected', 'accepted'] }, listPath: { type: 'string' } }, ['kind', 'device', 'form', 'testedField', 'expectation', 'listPath']),
             s({ kind: { const: 'cross_account_read' }, device: { type: 'string', enum: ['desktop', 'mobile'] }, auth: authRecipe, create: form, listPath: { type: 'string' }, expectation: { const: 'denied' } }, ['kind', 'device', 'auth', 'create', 'listPath', 'expectation']),
             s({ kind: { const: 'mobile_reachability' }, device: { const: 'mobile' }, auth: authRecipe, path: { type: 'string' }, control: { type: 'string' }, expectation: { const: 'reachable' } }, ['kind', 'device', 'path', 'control', 'expectation']),
           ],
