@@ -18,7 +18,11 @@ function CopyField({ value, label }: { value: string; label: string }) {
   );
 }
 
-export function VerifyPanel({ projectId, origin, token, verified, lastReason, lastChecked, apiOrigin = false, initialMethod = 'well_known_file' }: { projectId: string; origin: string; token: string; verified: boolean; lastReason: string | null; lastChecked: string | null; apiOrigin?: boolean; initialMethod?: Method }) {
+export function VerifyPanel({ projectId, origin, token, verified, lastReason, lastChecked, apiOrigin = false, initialMethod = 'well_known_file', domainRecord, dnsToken }: {
+  projectId: string; origin: string; token: string; verified: boolean; lastReason: string | null; lastChecked: string | null; apiOrigin?: boolean; initialMethod?: Method;
+  /** Suggested domain-wide record name, e.g. _oddhound-verify.example.com. */ domainRecord?: string;
+  /** Value to show for DNS (an API host shows its site's token so one record covers both). */ dnsToken?: string;
+}) {
   const router = useRouter();
   const [method, setMethod] = useState<Method>(initialMethod);
   const [busy, setBusy] = useState(false);
@@ -59,8 +63,10 @@ export function VerifyPanel({ projectId, origin, token, verified, lastReason, la
           <CopyField value={`<meta name="oddhound-verification" content="${token}">`} label="Meta tag" />
         </>}
         {method === 'dns_txt' && <>
-          <p className="text-2" style={{ margin: 0, fontSize: 13.5 }}>Add a TXT record named <code className="break">_oddhound-verify.{host}</code> with this value.</p>
-          <CopyField value={`oddhound-verify=${token}`} label="TXT record value" />
+          {domainRecord
+            ? <p className="text-2" style={{ margin: 0, fontSize: 13.5 }}>Add one TXT record named <code className="break">{domainRecord}</code> with this value. It covers {apiOrigin ? 'the site and this host' : host} and every other host under that domain, so API hosts need nothing extra. (<code className="break">_oddhound-verify.{host}</code> works too.)</p>
+            : <p className="text-2" style={{ margin: 0, fontSize: 13.5 }}>Add a TXT record named <code className="break">_oddhound-verify.{host}</code> with this value.</p>}
+          <CopyField value={`oddhound-verify=${dnsToken ?? token}`} label="TXT record value" />
           <p className="status-line" style={{ color: 'var(--warn)', fontSize: 12.5, alignItems: 'flex-start' }}><Icon name="alert" />
             <span>On DNS hosts that create the site&apos;s address records automatically (for example Vercel DNS), any new record at or under <code className="break">{host}</code> can switch those off and take the site offline. Use the file or meta tag method there.</span></p>
         </>}

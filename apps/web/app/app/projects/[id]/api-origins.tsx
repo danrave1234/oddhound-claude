@@ -4,10 +4,13 @@ import { useRouter } from 'next/navigation';
 import { Icon } from '@/ui/icons';
 import { VerifyPanel } from './verify-panel';
 
-type Api = { origin: string; token: string; verified: boolean; lastReason: string | null; lastChecked: string | null };
+type Api = { origin: string; token: string; verified: boolean; lastReason: string | null; lastChecked: string | null; domainRecord?: string };
 
-/** The site's own API hosts. Sign-up, login and saves often go to one; each must be verified separately. */
-export function ApiOrigins({ projectId, siteOrigin, apis }: { projectId: string; siteOrigin: string; apis: Api[] }) {
+/**
+ * The site's own API hosts. Sign-up, login and saves often go to one. A domain-wide DNS record with the
+ * site's value covers them automatically; otherwise each is proved on its own.
+ */
+export function ApiOrigins({ projectId, siteOrigin, siteToken, apis }: { projectId: string; siteOrigin: string; siteToken: string; apis: Api[] }) {
   const router = useRouter();
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
@@ -26,7 +29,7 @@ export function ApiOrigins({ projectId, siteOrigin, apis }: { projectId: string;
       <div>
         <h3 className="h3" style={{ margin: 0 }}>API on another host <span className="muted" style={{ fontWeight: 400 }}>(optional)</span></h3>
         <p className="muted" style={{ margin: '4px 0 0', fontSize: 13.5 }}>
-          If {new URL(siteOrigin).hostname} sends sign-up, login or saves to another host you own, add it here. Oddhound only sends changes to hosts you have verified.
+          If {new URL(siteOrigin).hostname} sends sign-up, login or saves to another host you own, add it here. Oddhound only sends changes to hosts you have verified; a domain-wide DNS record for the site covers hosts under that domain automatically.
         </p>
       </div>
       {apis.map((a) => (
@@ -36,7 +39,7 @@ export function ApiOrigins({ projectId, siteOrigin, apis }: { projectId: string;
             <span className="toolbar-spacer" />
             <button type="button" className="btn btn-sm" disabled={busy} onClick={() => call('DELETE', a.origin)} aria-label={`Remove ${a.origin}`}>Remove</button>
           </div>
-          <VerifyPanel projectId={projectId} origin={a.origin} token={a.token} verified={a.verified} lastReason={a.lastReason} lastChecked={a.lastChecked} apiOrigin initialMethod="dns_txt" />
+          <VerifyPanel projectId={projectId} origin={a.origin} token={a.token} verified={a.verified} lastReason={a.lastReason} lastChecked={a.lastChecked} apiOrigin initialMethod="dns_txt" domainRecord={a.domainRecord} dnsToken={siteToken} />
         </div>
       ))}
       {apis.length < 4 && (

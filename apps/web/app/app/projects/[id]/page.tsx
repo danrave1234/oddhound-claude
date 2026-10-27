@@ -7,6 +7,11 @@ import { SetupSteps } from '@/ui/setup-steps';
 import { currentUser, db } from '@/lib/server';
 import { VerifyPanel } from './verify-panel';
 import { ApiOrigins } from './api-origins';
+import { suggestedDomainRecord } from '@core/verification/ownership.ts';
+import { isIP } from 'node:net';
+
+/** Domain-wide record suggestion; none for IP literals or single-label hosts. */
+const domainRecord = (host: string) => (isIP(host.replace(/^\[|\]$/g, '')) || !host.includes('.') ? undefined : suggestedDomainRecord(host));
 import { RunSetup } from './run-setup';
 
 export const dynamic = 'force-dynamic';
@@ -49,10 +54,12 @@ export default async function Project({ params }: { params: Promise<{ id: string
               <p className="muted" style={{ margin: '4px 0 0', fontSize: 13.5 }}>Pick one method, publish the value, then check. Unverified sites can never be scanned.</p>
             </div>
           </div>
-          <VerifyPanel projectId={id} origin={project.origin} token={sv.token} verified={sv.verified} lastReason={sv.last_reason} lastChecked={sv.last_checked_at ? new Date(sv.last_checked_at).toISOString() : null} />
-          {sv.verified && <ApiOrigins projectId={id} siteOrigin={project.origin} apis={apis.map((a) => ({
+          <VerifyPanel projectId={id} origin={project.origin} token={sv.token} verified={sv.verified} lastReason={sv.last_reason} lastChecked={sv.last_checked_at ? new Date(sv.last_checked_at).toISOString() : null}
+            domainRecord={domainRecord(host)} />
+          {<ApiOrigins projectId={id} siteOrigin={project.origin} siteToken={sv.token} apis={apis.map((a) => ({
             origin: a.origin as string, token: a.token as string, verified: Boolean(a.verified), lastReason: a.last_reason as string | null,
-            lastChecked: a.last_checked_at ? new Date(a.last_checked_at).toISOString() : null }))} />}
+            lastChecked: a.last_checked_at ? new Date(a.last_checked_at).toISOString() : null,
+            domainRecord: domainRecord(new URL(a.origin).hostname) }))} />}
         </section>
 
         <section className="card card-pad" aria-labelledby="setup-h" aria-disabled={!sv.verified || undefined}>

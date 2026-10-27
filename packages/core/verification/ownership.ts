@@ -5,6 +5,7 @@
 
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { resolveTxt } from 'node:dns/promises';
+import { isIP } from 'node:net';
 import { parse } from 'parse5';
 import { safeFetch, SafeFetchError, type SafeFetchOptions } from '../net/safe-fetch.ts';
 
@@ -54,15 +55,38 @@ export type VerifyDeps = SafeFetchOptions & {
  */
 export const dnsVerificationName = (host: string) => `_oddhound-verify.${host}`;
 
-export async function verifyByDns(origin: string, token: string, deps: VerifyDeps = {}): Promise<VerificationResult> {
+/**
+ * Names checked for a DNS proof, most specific first. One record on a parent domain covers every host
+ * under it (`_oddhound-verify.example.com` covers app.example.com and api.app.example.com): whoever
+ * controls a parent's DNS already controls its subdomains, so this grants nothing extra. The walk
+ * stops at two labels, and IP literals have no parents.
+ */
+export function dnsVerificationNames(host: string): string[] {
+  const names = [dnsVerificationName(host), host];
+  if (isIP(host.replace(/^\[|\]$/g, ''))) return names;
+  const labels = host.split('.');
+  for (let i = 1; labels.length - i >= 2; i++) names.push(dnsVerificationName(labels.slice(i).join('.')));
+  return names;
+}
+
+/** A suggested domain-wide record name (eTLD+1 by a simple heuristic; display only, never trusted). */
+export function suggestedDomainRecord(host: string): string {
+  const labels = host.split('.');
+  const twoPartSuffix = labels.length >= 3 && labels.at(-1)!.length === 2 && /^(co|com|org|net|ac|gov|edu)$/.test(labels.at(-2)!);
+  return dnsVerificationName(labels.slice(twoPartSuffix ? -3 : -2).join('.'));
+}
+
+/** `tokens`: the origin's own token, plus (for an API host) its project's site token. */
+export async function verifyByDns(origin: string, tokens: string | string[], deps: VerifyDeps = {}): Promise<VerificationResult> {
   const checkedAt = new Date().toISOString();
   const host = new URL(origin).hostname;
+  const accepted = Array.isArray(tokens) ? tokens : [tokens];
   const resolver = deps.txtResolver ?? resolveTxt;
   let lastError: string | null = null;
-  for (const name of [dnsVerificationName(host), host]) {
+  for (const name of dnsVerificationNames(host)) {
     try {
       const values = (await resolver(name)).map((parts) => parts.join(''));
-      if (values.some((v) => v.startsWith('oddhound-verify=') && sameToken(v.slice('oddhound-verify='.length), token))) {
+      if (values.some((v) => v.startsWith('oddhound-verify=') && accepted.some((t) => sameToken(v.slice('oddhound-verify='.length), t)))) {
         return { verified: true, method: 'dns_txt', reason: 'token_found', checkedAt };
       }
     } catch (e) {
@@ -115,8 +139,12 @@ export async function verifyByMeta(origin: string, token: string, deps: VerifyDe
   }
 }
 
-export async function verifyOwnership(origin: string, token: string, method: VerificationMethod, deps: VerifyDeps = {}): Promise<VerificationResult> {
-  if (method === 'dns_txt') return verifyByDns(origin, token, deps);
+/**
+ * `siteToken` (API hosts only): the project's own site token, also accepted for DNS, so one
+ * domain-wide record proves the site and its API hosts. File and meta proofs stay per-origin.
+ */
+export async function verifyOwnership(origin: string, token: string, method: VerificationMethod, deps: VerifyDeps = {}, siteToken?: string): Promise<VerificationResult> {
+  if (method === 'dns_txt') return verifyByDns(origin, siteToken ? [token, siteToken] : token, deps);
   if (method === 'well_known_file') return verifyByFile(origin, token, deps);
   return verifyByMeta(origin, token, deps);
 }

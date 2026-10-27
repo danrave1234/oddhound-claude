@@ -3,7 +3,7 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
 import { currentUser, db, json, mayScanVerifiedSites } from '@/lib/server';
-import { canonicalOrigin, newVerificationToken, OriginError } from '@core/verification/ownership.ts';
+import { canonicalOrigin, newVerificationToken, OriginError, verifyOwnership } from '@core/verification/ownership.ts';
 import { labProfileFromEnv, isDialAllowed } from '@core/net/ip-policy.ts';
 
 const MAX_API_ORIGINS = 4; // matches RunContractSchema.target.apiOrigins
@@ -36,9 +36,16 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   const existing = (await db().query<{ origin: string }>('SELECT DISTINCT origin FROM site_verifications WHERE project_id = $1 AND origin <> $2', [id, project.origin])).rows;
   if (existing.some((r) => r.origin === origin)) return json({ ok: true, origin });
   if (existing.length >= MAX_API_ORIGINS) return json({ error: `A project can have at most ${MAX_API_ORIGINS} API origins.` }, 400);
-  await db().query('INSERT INTO site_verifications (project_id, owner_id, origin, revision, token) VALUES ($1,$2,$3,1,$4)', [id, user.id, origin, newVerificationToken()]);
+  const token = newVerificationToken();
+  const row = (await db().query<{ id: string }>('INSERT INTO site_verifications (project_id, owner_id, origin, revision, token) VALUES ($1,$2,$3,1,$4) RETURNING id', [id, user.id, origin, token])).rows[0]!;
   await db().query(`INSERT INTO audit_log (actor, action, origin, detail) VALUES ($1,'api_origin_added',$2,$3)`, [`user:${user.id}`, origin, JSON.stringify({ projectId: id })]);
-  return json({ ok: true, origin }, 201);
+  // A domain-wide DNS record for the site often covers this host already: check once, right away.
+  const siteToken = (await db().query<{ token: string }>('SELECT token FROM site_verifications WHERE project_id = $1 AND origin = $2 ORDER BY revision DESC LIMIT 1', [id, project.origin])).rows[0]?.token;
+  const check = await verifyOwnership(origin, token, 'dns_txt', { lab }, siteToken);
+  if (check.verified) {
+    await db().query('UPDATE site_verifications SET verified = true, method = $2, last_reason = $3, last_checked_at = now() WHERE id = $1', [row.id, 'dns_txt', check.reason]);
+  }
+  return json({ ok: true, origin, verified: check.verified }, 201);
 }
 
 export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }> }) {

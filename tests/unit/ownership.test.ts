@@ -3,7 +3,7 @@ import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import http from 'node:http';
 import net from 'node:net';
 import { once } from 'node:events';
-import { canonicalOrigin, metaTokensInHead, newVerificationToken, verifyByDns, verifyByFile, verifyByMeta } from '../../packages/core/verification/ownership.ts';
+import { canonicalOrigin, dnsVerificationNames, metaTokensInHead, newVerificationToken, suggestedDomainRecord, verifyByDns, verifyByFile, verifyByMeta, verifyOwnership } from '../../packages/core/verification/ownership.ts';
 import { endpointKey } from '../../packages/core/net/ip-policy.ts';
 
 describe('canonical origin', () => {
@@ -81,19 +81,46 @@ describe('DNS verification', () => {
     expect((await verifyByDns('https://example.com', 'ohv_DNS', { txtResolver: async () => [['ohv_DNS']] })).verified).toBe(false);
   });
 
-  it('reads the dedicated _oddhound-verify name for the exact host, not a sibling or the parent', async () => {
+  it('accepts the exact host or a parent domain, never a child or a sibling', async () => {
     const zone: Record<string, string[][]> = {
       '_oddhound-verify.www.example.com': [['oddhound-verify=ohv_WWW']],
       '_oddhound-verify.example.com': [['oddhound-verify=ohv_APEX']],
     };
+    const asked: string[] = [];
     const txtResolver = async (name: string) => {
+      asked.push(name);
       if (zone[name]) return zone[name];
       throw Object.assign(new Error('not found'), { code: 'ENOTFOUND' });
     };
     expect(await verifyByDns('https://www.example.com', 'ohv_WWW', { txtResolver })).toMatchObject({ verified: true, reason: 'token_found' });
-    // The apex record must not verify www, and vice versa.
-    expect(await verifyByDns('https://www.example.com', 'ohv_APEX', { txtResolver })).toMatchObject({ verified: false, reason: 'token_not_found' });
+    // One domain-wide record covers every host under it (parent DNS control implies child control).
+    expect(await verifyByDns('https://www.example.com', 'ohv_APEX', { txtResolver })).toMatchObject({ verified: true });
+    expect(await verifyByDns('https://preview.api.example.com', 'ohv_APEX', { txtResolver })).toMatchObject({ verified: true });
+    // A child record never verifies its parent, and a sibling's record never verifies another host.
     expect(await verifyByDns('https://example.com', 'ohv_WWW', { txtResolver })).toMatchObject({ verified: false });
+    expect(await verifyByDns('https://shop.example.com', 'ohv_WWW', { txtResolver })).toMatchObject({ verified: false });
+    // The walk stops at two labels: no lookup ever reaches a bare top-level domain.
+    expect(asked.some((n) => n === '_oddhound-verify.com')).toBe(false);
+  });
+
+  it('lists names from most to least specific and stops at two labels', () => {
+    expect(dnsVerificationNames('preview.api.studyboost.com')).toEqual([
+      '_oddhound-verify.preview.api.studyboost.com', 'preview.api.studyboost.com',
+      '_oddhound-verify.api.studyboost.com', '_oddhound-verify.studyboost.com',
+    ]);
+    expect(dnsVerificationNames('example.com')).toEqual(['_oddhound-verify.example.com', 'example.com']);
+    expect(dnsVerificationNames('203.0.113.5')).toEqual(['_oddhound-verify.203.0.113.5', '203.0.113.5']);
+    expect(suggestedDomainRecord('preview.studyboost.com')).toBe('_oddhound-verify.studyboost.com');
+    expect(suggestedDomainRecord('app.shop.co.uk')).toBe('_oddhound-verify.shop.co.uk');
+  });
+
+  it('accepts the project site token for an API host, but only by DNS', async () => {
+    const txtResolver = async (name: string) => {
+      if (name === '_oddhound-verify.studyboost.com') return [['oddhound-verify=ohv_SITE']];
+      throw Object.assign(new Error('not found'), { code: 'ENOTFOUND' });
+    };
+    expect(await verifyOwnership('https://preview.api.studyboost.com', 'ohv_API', 'dns_txt', { txtResolver }, 'ohv_SITE')).toMatchObject({ verified: true });
+    expect(await verifyOwnership('https://preview.api.studyboost.com', 'ohv_API', 'dns_txt', { txtResolver })).toMatchObject({ verified: false });
   });
 
   it('reports a DNS failure instead of a plain miss', async () => {

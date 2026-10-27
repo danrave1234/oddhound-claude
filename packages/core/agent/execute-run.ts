@@ -20,7 +20,7 @@ import type { LabProfile } from '../net/ip-policy.ts';
 import { verifyOwnership, type VerificationMethod } from '../verification/ownership.ts';
 import { ProviderError, type ChatMessage, type ChatProvider, type ToolCall } from '../providers/types.ts';
 import { priceFor, inputTokenBound, reservationMicros, actualMicros } from '../providers/pricing.ts';
-import { RunSession } from './session.ts';
+import { RunSession, SiteUnreachable } from './session.ts';
 import { TOOL_DEFINITIONS, ToolArgs, BROWSER_TOOLS, boundaryValues, type ToolName } from './tools.ts';
 import { systemPrompt } from './prompt.ts';
 import { runHandoff, HandoffEnded } from './handoff.ts';
@@ -97,7 +97,7 @@ export async function executeRun(deps: ExecuteDeps, runId: string): Promise<RunS
           `SELECT id, token, method FROM site_verifications WHERE project_id = $1 AND origin = $2 AND revision = $3 AND verified`,
           [run.project_id, api.origin, api.verificationRevision])).rows[0];
         const r = row?.method
-          ? await (deps.verify ?? verifyOwnership)(api.origin, row.token, row.method, { lab: deps.lab })
+          ? await (deps.verify ?? verifyOwnership)(api.origin, row.token, row.method, { lab: deps.lab }, sv?.token)
           : { verified: false, method: row?.method ?? 'dns_txt', reason: 'no_current_verification', checkedAt: new Date().toISOString() };
         if (row) await db.query('UPDATE site_verifications SET verified = $2, last_reason = $3, last_checked_at = now() WHERE id = $1', [row.id, r.verified, r.reason]);
         await ev(r.verified ? 'site.verified' : 'site.verification_failed', { origin: api.origin, method: r.method, reason: r.reason, api: true });
@@ -176,6 +176,9 @@ export async function executeRun(deps: ExecuteDeps, runId: string): Promise<RunS
   } catch (e) {
     if (e instanceof HandoffEnded) {
       await finish('stopped', e.reason);
+    } else if (e instanceof SiteUnreachable) {
+      await ev('site.unreachable', { url: e.url, detail: e.detail });
+      await finish('failed', 'site_unreachable');
     } else if (e instanceof FencedError || abort.signal.aborted) {
       const r = (await db.query<{ stop_requested_at: Date | null }>('SELECT stop_requested_at FROM runs WHERE id = $1', [runId])).rows[0];
       await finish('stopped', r?.stop_requested_at ? 'user_stop' : e instanceof FencedError ? e.reason : 'expired_or_capped');

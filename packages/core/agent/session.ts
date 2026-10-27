@@ -14,6 +14,17 @@ export type HeaderObservation = { path: string; csp: boolean; frameProtection: b
 
 export class ScopeViolation extends Error {}
 
+/** The site did not load in the run's browser (after a retry). Not an Oddhound fault. */
+export class SiteUnreachable extends Error {
+  readonly url: string;
+  readonly detail: string;
+  constructor(url: string, detail: string) {
+    super(`site unreachable: ${url}`);
+    this.url = url;
+    this.detail = detail;
+  }
+}
+
 export class RunSession {
   readonly #browser: Browser;
   readonly #policy: ScopePolicy;
@@ -58,10 +69,23 @@ export class RunSession {
       ctx.on('response', (r) => { void this.#recordResponse(r); });
       const page = await ctx.newPage();
       page.setDefaultTimeout(10_000);
+      // Real sites (especially previews that scale to zero) can take well over 10 s on a cold start.
+      page.setDefaultNavigationTimeout(30_000);
       entry = { ctx, page };
       this.#contexts.set(key, entry);
       const startUrl = other ? other.page.url() : `${this.#policy.primaryOrigin}/`;
-      await page.goto(startUrl.startsWith(this.#policy.primaryOrigin) ? startUrl : `${this.#policy.primaryOrigin}/`, { waitUntil: 'domcontentloaded' });
+      const target = startUrl.startsWith(this.#policy.primaryOrigin) ? startUrl : `${this.#policy.primaryOrigin}/`;
+      // First load: generous timeout and one retry, then a clear "site unreachable" instead of a crash.
+      let lastError: unknown;
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try { await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 45_000 }); lastError = undefined; break; }
+        catch (e) { lastError = e; if (attempt < 2) await new Promise((r) => setTimeout(r, 2_000)); }
+      }
+      if (lastError) {
+        this.#contexts.delete(key);
+        await ctx.close().catch(() => {});
+      }
+      if (lastError) throw new SiteUnreachable(target, (lastError as Error).message.split('\n')[0]!.slice(0, 200));
     }
     return entry.page;
   }

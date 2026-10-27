@@ -42,7 +42,8 @@ function describe(e: Snapshot['events'][number]): string | null {
     case 'browser.destroy_unconfirmed': return `Browser destruction NOT confirmed (${p.detail}); the reaper will retry`;
     case 'provider.selected': return `Model: ${p.label} · ${p.model}`;
     case 'identity.created': return p.phase === 'verification' ? `Verifier created synthetic account ${p.role}` : `Created synthetic identity ${p.email}`;
-    case 'site.verified': return `Ownership re-checked before the run (${p.method}): verified`;
+    case 'site.verified': return `Ownership${p.api ? ` of ${p.origin}` : ''} re-checked before the run (${p.method}): verified`;
+    case 'site.unreachable': return `The site did not load in the run's browser after a retry (${p.detail}); run ended`;
     case 'site.verification_failed': return `Ownership re-check failed (${p.reason}); run blocked`;
     case 'budget.denied': return `Budget limit reached (${String(p.reason).replace(/_/g, ' ')}); no further model calls`;
     case 'retest.finished': return `Retest “${p.title}”: original check ${p.outcome}, control ${p.control} → ${p.lifecycle}`;
@@ -307,7 +308,7 @@ export function RunWorkspace({ initial, controllable, replay, signedIn }: { init
 }
 
 function kindOf(type: string): 'bad' | 'ok' | 'warn' | 'accent' | 'plain' {
-  if (['finding.verified', 'run.error', 'provider.error', 'browser.destroy_unconfirmed', 'site.verification_failed', 'budget.denied'].includes(type)) return 'bad';
+  if (['finding.verified', 'run.error', 'provider.error', 'browser.destroy_unconfirmed', 'site.verification_failed', 'site.unreachable', 'budget.denied'].includes(type)) return 'bad';
   if (['site.verified', 'browser.ready', 'browser.terminated', 'handoff.completed'].includes(type)) return 'ok';
   if (['finding.candidate', 'finding.inconclusive', 'scope.denied', 'egress.denied', 'handoff.timed_out', 'handoff.cancelled', 'model.truncated'].includes(type)) return 'warn';
   if (['state.discovered', 'workflow.updated', 'handoff.started', 'finding.verifying'].includes(type)) return 'accent';
