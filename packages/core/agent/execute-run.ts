@@ -61,7 +61,7 @@ type StepRecord = { seq: number; ctx: string; device: 'desktop' | 'mobile'; acto
 type ClickRole = Extract<TraceStep, { op: 'click' }>['role'];
 
 /** What the runner learned from one ledgered browser action (read by scenario batches). */
-type StepInfo = { seq: number; error: string | null; notes: string[]; scopeBlocked: boolean; dialogs: string[]; newState: boolean; obs: Observation; stated?: string };
+type StepInfo = { seq: number; error: string | null; notes: string[]; scopeBlocked: boolean; ownScopeBlocked: boolean; dialogs: string[]; newState: boolean; obs: Observation; stated?: string };
 
 /** A scenario batch as Oddhound ran it: the ledgered action of each step and the model's expectation. */
 type BatchRecord = { no: number; goal: string; steps: { seq: number; expect?: Expectation; ok?: boolean; stated?: string }[] };
@@ -469,7 +469,7 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
     if (dialogs.length) await ev('dialog.dismissed', { seq: mySeq, dialogs });
     const o = await session.observe();
     const newState = await recordState(o, describe, actionId);
-    lastStep = { seq: mySeq, error, notes, scopeBlocked: drained.scopeBlocked, dialogs, newState, obs: o, stated: opts.stated };
+    lastStep = { seq: mySeq, error, notes, scopeBlocked: drained.scopeBlocked, ownScopeBlocked: drained.ownScopeBlocked, dialogs, newState, obs: o, stated: opts.stated };
     const head = `${error ? `#${mySeq} FAILED: ${error}` : `#${mySeq} OK`}${notes.length ? `\n${notes.join('\n')}` : ''}${dialogs.length ? `\nDIALOG (dismissed by Oddhound): ${dialogs.join(' | ')}` : ''}`;
     if (opts.quiet ?? quietSteps) return head;
     return `${head}\n${formatObservation(o)}\n${statusLine()}`;
@@ -594,7 +594,10 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
             if (info.error) surprise = 'a step failed';
             if (info.notes.length) { line += ` | ${info.notes.join(' | ')}`; surprise ??= 'Oddhound detected a problem'; }
             if (info.dialogs.length) { line += ` | dialog dismissed: ${info.dialogs.join(' | ')}`; surprise ??= 'a dialog opened'; }
-            if (info.scopeBlocked) { line += ' | a request was blocked by the scope policy'; surprise ??= 'policy block'; }
+            // A blocked request to the verified site, or a blocked navigation, changes what the step did. Blocked
+            // third-party writes (analytics beacons, injected scripts) are enforced and logged but routine.
+            if (info.ownScopeBlocked) { line += ' | a request to the site was blocked by the scope policy'; surprise ??= 'policy block'; }
+            else if (info.scopeBlocked) line += ' | a third-party request was blocked (logged; not a surprise)';
             if (expect && !info.error) {
               const v = judgeExpectation(expect, await pageFacts(await session.page(), pathBefore, info.obs));
               recStep.ok = v.ok;
