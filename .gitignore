@@ -2,7 +2,7 @@ node_modules/
 .next/
 .tools/
 .data/
-artifacts/
+/artifacts/
 test-results/
 .env
 .env.*
