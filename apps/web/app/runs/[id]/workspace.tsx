@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { HoundMark, Icon, type IconName } from '@/ui/icons';
 import { StatusBadge, statusLabel, findingStatus } from '@/ui/status';
 import { WorkflowMap } from './workflow-map';
+import { LiveDeck } from './live-deck';
 
 type Snapshot = {
   run: Record<string, any>;
@@ -235,6 +236,7 @@ export function RunWorkspace({ initial, controllable, replay, signedIn }: { init
 
           <div className="pane-body">
             {controllable && run.status === 'waiting_for_input' && run.handoff_enabled && <HandoffPanel runId={runId} onStop={stop} />}
+            <LiveDeck snap={snap} active={active} replay={replay} onOpenBrowser={() => setView('browser')} onOpenFindings={() => setView('findings')} />
             {run.mode === 'retest' && (
               <div className="card">
                 <div className="card-header"><h2 className="h3"><Icon name="replay" /> Retest results</h2><span className="muted" style={{ fontSize: 12.5 }}>Saved assertions replayed unchanged</span></div>

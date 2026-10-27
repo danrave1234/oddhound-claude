@@ -43,6 +43,10 @@ const PointerGlyph = (p: GlyphProps) => (
 const EvidenceGlyph = (p: GlyphProps) => (
   <svg {...svgProps(p)}><rect x="1.8" y="3" width="12.4" height="10" rx="2" /><path d="M1.8 10.6l3.4-3 2.6 2.3 2-1.6 4.4 3.4" /><circle cx="10.8" cy="6.2" r="1.1" fill="currentColor" stroke="none" /></svg>
 );
+/** Pause: two bars (replay playback). */
+const PauseGlyph = (p: GlyphProps) => (
+  <svg {...svgProps(p)} stroke="none" fill="currentColor"><rect x="3.5" y="2.5" width="3.2" height="11" rx="1" /><rect x="9.3" y="2.5" width="3.2" height="11" rx="1" /></svg>
+);
 /** Fix prompt: a note handed to your coding AI. */
 const BriefGlyph = (p: GlyphProps) => (
   <svg {...svgProps(p)}><path d="M4 1.8h5.3L12.5 5v8.2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.8a1 1 0 0 1 1-1z" /><path d="M9 1.8V5.3h3.5" /><path d="M5.6 8.4h4.8M5.6 11h3.2" /></svg>
@@ -56,7 +60,7 @@ const glyphs = {
   play: PlayIcon, plus: PlusIcon, project: ProjectIcon, pulse: PulseIcon, question: QuestionIcon, shield: ShieldCheckIcon, signin: SignInIcon,
   signout: SignOutIcon, skip: SkipIcon, stop: SquareFillIcon, retest: SyncIcon, workflow: WorkflowIcon, fail: XCircleIcon,
   // original Oddhound glyphs
-  sniff: SniffGlyph, paw: PawGlyph, trail: TrailGlyph, replay: ReplayGlyph, pointer: PointerGlyph, evidence: EvidenceGlyph, brief: BriefGlyph,
+  sniff: SniffGlyph, paw: PawGlyph, trail: TrailGlyph, replay: ReplayGlyph, pointer: PointerGlyph, evidence: EvidenceGlyph, brief: BriefGlyph, pause: PauseGlyph,
 } satisfies Record<string, ComponentType<GlyphProps>>;
 
 export type IconName = keyof typeof glyphs;

@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import './motion.css';
 
 export const metadata: Metadata = {
   title: { default: 'Oddhound — Find what you didn\'t test', template: '%s · Oddhound' },
