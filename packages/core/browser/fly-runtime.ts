@@ -64,11 +64,13 @@ export class FlyMachineRuntime implements BrowserRuntime {
     try {
       await this.#api('GET', `/machines/${machine.id}/wait?state=started&timeout=60`);
       if (!machine.private_ip) throw new Error('Fly did not return a private 6PN address');
-      // Give the browser server a moment to bind, then connect over the private network only.
+      // The browser server needs ~20 s after boot (firewall, proxy, Chromium). Connect over the private
+      // network only, retrying until a deadline rather than a fixed count (refusals return instantly).
       let browser = null;
-      for (let i = 0; i < 20 && !browser; i++) {
-        browser = await chromium.connect(`ws://[${machine.private_ip}]:3000${wsPath}`, { timeout: 5_000 }).catch(() => null);
-        if (!browser) await new Promise((r) => setTimeout(r, 750));
+      const deadline = Date.now() + 120_000;
+      while (!browser && Date.now() < deadline) {
+        browser = await chromium.connect(`ws://[${machine.private_ip}]:3000${wsPath}`, { timeout: 10_000 }).catch(() => null);
+        if (!browser) await new Promise((r) => setTimeout(r, 1_000));
       }
       if (!browser) throw new Error('could not connect to the browser Machine over 6PN');
       const sandboxVerdict = await checkChromiumSandbox(browser);
