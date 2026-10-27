@@ -90,6 +90,18 @@ Built because test accounts, staging copies and bot-check changes were too much 
 | EstabWeb production run 8f5feea4 | Live view worked (137 owner inputs relayed). **Sign-in was refused by EstabWeb's reCAPTCHA v3 ("Bot check failed")** even with the owner driving, so the run was stopped by the owner: $0 model spend, browser destroyed and confirmed. Oddhound does not try to get past bot checks; sites with strict bot scoring on login need the owner's own decision on how to allow testing. |
 | Local operator runs | An admin on a local development build now spends the development allocation, so those runs do not use the public 3-per-day quota. Hosted production unchanged. |
 
+## 3e. Public deployment on Fly (October 27, 2026)
+
+**Live:** https://oddhound-claude-web.fly.dev (web, Fly `iad`), worker and per-run browser Machines in Fly `ord`, Neon Postgres in AWS us-east-1, demo targets https://oddhound-claude-demo.fly.dev and https://oddhound-claude-demo-fixed.fly.dev. GitHub sign-in uses a dedicated OAuth app.
+
+| Check | Result |
+|---|---|
+| Live demo run 31697101 (anonymous, landing page path) | **Completed.** Real `muse-spark-1.3`, 47 turns, 36 actions, $0.20. Fresh Fly Machine in the secret-free browser app, reached over 6PN, **Chromium sandbox on**, nftables applied, destroyed and confirmed (no Machines left). **All four seeded defects verified**, plus 3 configuration observations. |
+| Meta availability by network | From Fly Singapore the API listed no models; from several US/AP regions `muse-spark-1.3` was intermittently `model_not_found` (Virginia 1/10, Chicago 6/8, Sydney 8/8 in one sample). The worker now retries only that unbilled 404, at most 8 attempts, each logged as `provider.retry`. This run needed none. |
+| Truthful status | A model-provider failure now ends the run as `failed` (an earlier deployed run was wrongly shown as `completed`). |
+| Repository gap fixed | A `.gitignore` rule (`artifacts/`) had kept `packages/core/artifacts/store.ts` and the artifact API route out of git; both are now tracked. Deployed images are built from committed code only (`git archive HEAD`). |
+| Not yet verified on the deployment | GitHub sign-in end to end, verified-site scans and the handoff on Fly, retest on the fixed demo build from the live UI. |
+
 ## 4. Spec gates (R0–R7) — where this build stands
 
 | Gate | State |
