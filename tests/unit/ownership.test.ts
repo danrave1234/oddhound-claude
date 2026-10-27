@@ -80,4 +80,24 @@ describe('DNS verification', () => {
     expect((await verifyByDns('https://example.com', 'ohv_OTHER', { txtResolver: txt })).verified).toBe(false);
     expect((await verifyByDns('https://example.com', 'ohv_DNS', { txtResolver: async () => [['ohv_DNS']] })).verified).toBe(false);
   });
+
+  it('reads the dedicated _oddhound-verify name for the exact host, not a sibling or the parent', async () => {
+    const zone: Record<string, string[][]> = {
+      '_oddhound-verify.www.example.com': [['oddhound-verify=ohv_WWW']],
+      '_oddhound-verify.example.com': [['oddhound-verify=ohv_APEX']],
+    };
+    const txtResolver = async (name: string) => {
+      if (zone[name]) return zone[name];
+      throw Object.assign(new Error('not found'), { code: 'ENOTFOUND' });
+    };
+    expect(await verifyByDns('https://www.example.com', 'ohv_WWW', { txtResolver })).toMatchObject({ verified: true, reason: 'token_found' });
+    // The apex record must not verify www, and vice versa.
+    expect(await verifyByDns('https://www.example.com', 'ohv_APEX', { txtResolver })).toMatchObject({ verified: false, reason: 'token_not_found' });
+    expect(await verifyByDns('https://example.com', 'ohv_WWW', { txtResolver })).toMatchObject({ verified: false });
+  });
+
+  it('reports a DNS failure instead of a plain miss', async () => {
+    const txtResolver = async () => { throw Object.assign(new Error('timeout'), { code: 'ETIMEOUT' }); };
+    expect(await verifyByDns('https://example.com', 'ohv_DNS', { txtResolver })).toMatchObject({ verified: false, reason: 'dns_error:ETIMEOUT' });
+  });
 });

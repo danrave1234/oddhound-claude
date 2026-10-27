@@ -63,6 +63,19 @@ Each failure mode was caught by the verifier and reported truthfully (inconclusi
 | Findings | No rule violations reported within that scope. Two **configuration observations**, confirmed against the live headers: no Content-Security-Policy, and no X-Frame-Options / `frame-ancestors` (only HSTS is set). |
 | Follow-up made | The agent used its whole turn budget without writing a summary, so the loop now warns the model in its last 5 turns to report and finish. |
 
+## 3c. Second site: www.estabweb.com — incident and current state (October 27, 2026)
+
+Drave authorized active production testing ("no one using it"). Not scanned yet.
+
+| Step | Result |
+|---|---|
+| File method, first try | The verification file commit failed to deploy: Vercel builds of `main` ran out of memory (SIGKILL during the Turbopack compile) since commit 9b74bf3 (April). Production kept serving 3c69dc9. |
+| DNS method — **outage caused** | A TXT record on `www` (Vercel DNS) switched off Vercel's automatic address records for `www`. **www.estabweb.com did not resolve for about 11 minutes** (plus resolver negative caching of up to 10 minutes) until the record was deleted. A canary on the unused `staging` name showed that a record at `_oddhound-verify.staging` has the same effect, so a separate verification name does not avoid it on Vercel DNS. Both records were deleted; estabweb.com DNS is back to its original records. |
+| Product change | DNS verification now reads `_oddhound-verify.<host>` (still accepts the bare host), and the UI warns that on auto-managed DNS like Vercel's, any record at or under the host can take the site offline, so use the file or meta method. |
+| Deploy fix | Reverted 9b74bf3 on EstabWeb `main` (it also needs migration 021). `main` now equals live 3c69dc9 plus the verification file; the build succeeded and the file is served. |
+| Scan run 7bf3f18c | `failed` after 11 s: it started during the DNS outage, so the egress proxy could not resolve the host. $0.005 spent; container destroyed and confirmed. |
+| Next | Ownership check with the file method and the active scan. Both are waiting on Drave: the session's safety check blocked the ownership request. |
+
 ## 4. Spec gates (R0–R7) — where this build stands
 
 | Gate | State |

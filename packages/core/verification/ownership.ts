@@ -45,17 +45,34 @@ export type VerifyDeps = SafeFetchOptions & {
   txtResolver?: (hostname: string) => Promise<string[][]>;
 };
 
+/**
+ * The TXT record lives on its own name, `_oddhound-verify.<host>`, because a TXT record on the web
+ * hostname itself is impossible when that name is a CNAME. A record on the bare hostname is still
+ * accepted. Caution (observed on Vercel DNS, Oct 27, 2026): when the provider creates address
+ * records automatically, ANY explicit record at or under the hostname switches them off and the
+ * site stops resolving. The UI steers those owners to the file or meta tag method.
+ */
+export const dnsVerificationName = (host: string) => `_oddhound-verify.${host}`;
+
 export async function verifyByDns(origin: string, token: string, deps: VerifyDeps = {}): Promise<VerificationResult> {
   const checkedAt = new Date().toISOString();
   const host = new URL(origin).hostname;
-  try {
-    const records = await (deps.txtResolver ?? resolveTxt)(host);
-    const values = records.map((parts) => parts.join(''));
-    const ok = values.some((v) => v.startsWith('oddhound-verify=') && sameToken(v.slice('oddhound-verify='.length), token));
-    return { verified: ok, method: 'dns_txt', reason: ok ? 'token_found' : 'token_not_found', checkedAt };
-  } catch (e) {
-    return { verified: false, method: 'dns_txt', reason: `dns_error:${(e as NodeJS.ErrnoException).code ?? 'unknown'}`, checkedAt };
+  const resolver = deps.txtResolver ?? resolveTxt;
+  let lastError: string | null = null;
+  for (const name of [dnsVerificationName(host), host]) {
+    try {
+      const values = (await resolver(name)).map((parts) => parts.join(''));
+      if (values.some((v) => v.startsWith('oddhound-verify=') && sameToken(v.slice('oddhound-verify='.length), token))) {
+        return { verified: true, method: 'dns_txt', reason: 'token_found', checkedAt };
+      }
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code ?? 'unknown';
+      if (code !== 'ENOTFOUND' && code !== 'ENODATA') lastError = code; // a missing name is just "not found"
+    }
   }
+  return lastError
+    ? { verified: false, method: 'dns_txt', reason: `dns_error:${lastError}`, checkedAt }
+    : { verified: false, method: 'dns_txt', reason: 'token_not_found', checkedAt };
 }
 
 export async function verifyByFile(origin: string, token: string, deps: VerifyDeps = {}): Promise<VerificationResult> {
