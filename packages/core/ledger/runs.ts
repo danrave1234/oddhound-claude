@@ -51,7 +51,8 @@ export async function admitRun(db: Db, input: AdmissionInput): Promise<Admission
       if (recent.rows[0].n >= 1) return { ok: false, reason: 'demo_hourly_limit' };
       const activeDemo = await tx.query(`SELECT count(*)::int AS n FROM runs WHERE mode = 'demo_target' AND status IN ${ACTIVE}`);
       if (activeDemo.rows[0].n >= 1) return { ok: false, reason: 'demo_busy' };
-    } else if (input.ownerId) {
+    } else if (input.ownerId && input.spendAccount === 'public') {
+      // The per-user daily quota protects the public budget; development-budget runs are operator-only.
       const today = await tx.query(`SELECT count(*)::int AS n FROM runs WHERE owner_id = $1 AND day_bucket = (now() AT TIME ZONE 'utc')::date AND counted_against_quota`, [input.ownerId]);
       if (today.rows[0].n >= LIMITS.runsPerUserPerDay) return { ok: false, reason: 'daily_quota' };
     }

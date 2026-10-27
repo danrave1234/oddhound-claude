@@ -62,7 +62,10 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     devices: b.devices,
     expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
   });
-  const result = await admitRun(db(), { principal: `user:${user.id}`, ownerId: user.id, projectId: id, mode: 'verified_site', contract, spendAccount: 'public' });
+  // An admin working on a local development build spends the development allocation (MVP §20), not
+  // the public one, so it does not use up the public per-user daily quota. Never in production.
+  const devOperator = user.isAdmin && process.env.NODE_ENV !== 'production' && process.env.ODDHOUND_DEV_LOGIN === '1';
+  const result = await admitRun(db(), { principal: `user:${user.id}`, ownerId: user.id, projectId: id, mode: 'verified_site', contract, spendAccount: devOperator ? 'development' : 'public' });
   if (!result.ok) return json({ error: `Run not admitted: ${result.reason.replace(/_/g, ' ')}.`, reason: result.reason }, 429);
   await enqueueRun(result.runId);
   return json({ runId: result.runId }, 201);

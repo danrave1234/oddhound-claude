@@ -80,6 +80,16 @@ Drave authorized active production testing ("no one using it"). Not scanned yet.
 | Not reached | Sign-up and login never got past reCAPTCHA. Oddhound's policy blocks writes to unverified origins, so reCAPTCHA's POSTs to google.com were denied (15 times) and the site answered "bot check failed". So R3 (password errors) was **not really exercised**, no account was created, and the dashboard was not tested. Testing it needs a pre-confirmed test account supplied through the run contract. |
 | Other rules | R2: invalid email rejected by the browser's built-in email check. R4: nav and footer links opened working pages. R5: phone menu opened; pricing and sign-up reachable. No violations reported. |
 
+## 3d. Owner sign-in handoff (October 27, 2026)
+
+Built because test accounts, staging copies and bot-check changes were too much setup for users. A run can start with a live view of its own fresh browser; the owner signs in, then hands over and the agent tests the signed-in area. Owner inputs are encrypted in transit, deleted once applied, never logged in clear or shown to the model; the session lives in worker memory for that run only. Scope relaxes only while the owner drives (denied URLs stay blocked). Safe default URL-word blocks (payments, admin, cron, domains, delete, logout) are prefilled for every run.
+
+| Check | Result |
+|---|---|
+| Real-browser integration test | Pass: frames published, clicks/typing/keys relayed, signed-in cookie handed to the agent and to the phone context, no typed text in events, queue and frames emptied, cancel stops cleanly. |
+| EstabWeb production run 8f5feea4 | Live view worked (137 owner inputs relayed). **Sign-in was refused by EstabWeb's reCAPTCHA v3 ("Bot check failed")** even with the owner driving, so the run was stopped by the owner: $0 model spend, browser destroyed and confirmed. Oddhound does not try to get past bot checks; sites with strict bot scoring on login need the owner's own decision on how to allow testing. |
+| Local operator runs | An admin on a local development build now spends the development allocation, so those runs do not use the public 3-per-day quota. Hosted production unchanged. |
+
 ## 4. Spec gates (R0–R7) — where this build stands
 
 | Gate | State |
