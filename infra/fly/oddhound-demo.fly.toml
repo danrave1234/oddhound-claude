@@ -3,7 +3,7 @@
 #   oddhound-claude-demo-fixed  (corrected build)   same file with -a oddhound-claude-demo-fixed -e FIXTURE_MODE=fixed
 # Secret: ODDHOUND_FIXTURE_RESET_TOKEN (shared with the web app so runs can reset the shared demo).
 app = "oddhound-claude-demo"
-primary_region = "sin"
+primary_region = "iad"
 
 [env]
   FIXTURE_PORT = "8080"

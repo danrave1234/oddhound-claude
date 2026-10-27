@@ -155,7 +155,10 @@ export async function executeRun(deps: ExecuteDeps, runId: string): Promise<RunS
     // 6. Deterministic configuration observations from captured responses (no model involvement).
     await recordConfigurationObservations(db, run, session, contract, ev);
 
-    await finish(loop.stopReason?.startsWith('budget_') || loop.stopReason === 'limit_turns' || loop.stopReason === 'limit_actions' ? 'stopped' : 'completed', stopReason);
+    // Truthful status: a model provider failure is a failed run, not a completed one.
+    const ended = loop.stopReason === 'provider_error' ? 'failed'
+      : loop.stopReason?.startsWith('budget_') || loop.stopReason === 'limit_turns' || loop.stopReason === 'limit_actions' ? 'stopped' : 'completed';
+    await finish(ended, stopReason);
     return await done();
   } catch (e) {
     if (e instanceof HandoffEnded) {

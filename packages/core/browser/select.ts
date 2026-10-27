@@ -15,7 +15,7 @@ export function runtimeFromEnv(env: NodeJS.ProcessEnv = process.env): BrowserRun
   const kind = env.BROWSER_RUNTIME ?? 'docker';
   if (kind === 'fly') {
     if (!env.FLY_API_TOKEN || !env.FLY_BROWSER_IMAGE) throw new Error('BROWSER_RUNTIME=fly needs FLY_API_TOKEN and FLY_BROWSER_IMAGE');
-    return new FlyMachineRuntime({ apiToken: env.FLY_API_TOKEN, app: env.FLY_BROWSER_APP ?? 'oddhound-browser', image: env.FLY_BROWSER_IMAGE, region: env.FLY_REGION ?? 'sin' });
+    return new FlyMachineRuntime({ apiToken: env.FLY_API_TOKEN, app: env.FLY_BROWSER_APP ?? 'oddhound-browser', image: env.FLY_BROWSER_IMAGE, region: env.FLY_REGION ?? 'iad' });
   }
   if (kind === 'host') return new LocalBrowserRuntime();
   return new DockerBrowserRuntime({

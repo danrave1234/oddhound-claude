@@ -4,4 +4,4 @@
 #   * NO secrets: never run `fly secrets set` here (Fly gives app secrets to every Machine in the app);
 #   * NO [[services]] and no public IP: the worker reaches each Machine only over the private 6PN network.
 app = "oddhound-claude-browser"
-primary_region = "sin"
+primary_region = "iad"

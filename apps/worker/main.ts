@@ -51,7 +51,7 @@ async function reap() {
   try {
     const runs = await reapStaleRuns(db);
     const browsers = env.BROWSER_RUNTIME === 'fly' && env.FLY_API_TOKEN
-      ? await reapFlyMachines({ apiToken: env.FLY_API_TOKEN, app: env.FLY_BROWSER_APP ?? 'oddhound-browser', image: env.FLY_BROWSER_IMAGE ?? '', region: env.FLY_REGION ?? 'sin' }, (id) => isRunActive(db, id))
+      ? await reapFlyMachines({ apiToken: env.FLY_API_TOKEN, app: env.FLY_BROWSER_APP ?? 'oddhound-browser', image: env.FLY_BROWSER_IMAGE ?? '', region: env.FLY_REGION ?? 'iad' }, (id) => isRunActive(db, id))
       : env.BROWSER_RUNTIME === 'host' ? [] : await reapOrphanContainers((id) => isRunActive(db, id));
     const artifacts = await purgeExpiredArtifacts(db);
     if (runs.length || browsers.length || artifacts) log({ event: 'reaper', runs: runs.length, browsers: browsers.length, artifacts });
