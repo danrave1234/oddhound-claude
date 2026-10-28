@@ -65,7 +65,7 @@ export function systemPrompt(c: RunContract, mode: AgentMode = 'steps'): string 
     c.goals.length ? `Owner focus areas (test these early; they are priorities, not limits): ${c.goals.map((g, i) => `${i + 1}. ${g}`).join(' ')}` : 'Owner focus areas: none given. Choose your own priorities by risk.',
     `Owner rules: ${owner.map((r) => `${r.id}: ${r.text}`).join(' ') || 'none supplied'}`,
     `Oddhound baseline rules (apply to every site): ${baseline.map((r) => `${r.id}: ${r.text}`).join(' ')}`,
-    `Budget: ${LIMITS.modelTurnsPerRun} turns and ${LIMITS.browserActionsPerRun} browser actions.`,
+    `Budget: $${(LIMITS.modelSpendPerRunMicros / 1e6).toFixed(2)} of model spend and ${LIMITS.runWallClockMs / 60_000} minutes. There is no limit on turns or actions: explore as widely as the site deserves.`,
     'Act only by calling tools; do not narrate. When the plan is done or the budget is nearly used, call finish_run with a short factual summary of what you tested and found.',
   ].join('\n');
 }

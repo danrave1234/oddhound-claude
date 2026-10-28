@@ -131,7 +131,7 @@ export function RunSetup({ projectId, environment }: { projectId: string; enviro
       {error && <p role="alert" className="status-line" style={{ color: 'var(--bad)', marginBottom: 12 }}><Icon name="fail" /> {error}</p>}
       <div className="sticky-actions">
         <button className="btn btn-primary" disabled={busy || (needsAck && !ack)} aria-busy={busy || undefined}><Icon name="play" /> {busy ? 'Starting…' : 'Start run'}</button>
-        <span className="muted" style={{ fontSize: 12.5 }}>Each run stops at 15 minutes, 250 actions or $2 of model spend, at one action per second.</span>
+        <span className="muted" style={{ fontSize: 12.5 }}>Each run stops at $2 of model spend or after 60 minutes. Turns and actions are not limited.</span>
       </div>
     </form>
   );

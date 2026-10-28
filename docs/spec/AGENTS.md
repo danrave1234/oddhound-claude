@@ -70,7 +70,7 @@ bounded finalization -> destroy/confirm Machine; independent orphan reaper
   - 1 run per site at a time;
   - a daily public spend ceiling with an admin kill switch;
   - a $2 per-run model cap reserved before each call;
-  - ≤ 1 agent action per second;
+  - agent actions paced at one per 300 ms; no turn or action cap and a 60-minute backstop clock (Oct 28, 2026, owner decision);
   - an identifiable user agent `Oddhound/1.0 (+<site>/bot)`, never stealth.
 - Verified-site mode opens only after all applicable **SELF-01–23** pass for enabled capabilities (MVP §16). Live anonymous demos need their applicable platform/fixture/budget gates too. Until then verified sites are allowlisted, never unverified. A disabled optional feature needs evidence its entry point is disabled; core controls cannot be skipped.
 - Anonymous demo calls use the public ledger and admission limits, never the $15 judging reserve. Only authenticated admin/judge grants may spend reserve funds or gain judge priority. Enforce $50 public lifetime and $7 daily ceilings atomically, including outstanding/unknown reservations; SDK retries are explicit budgeted attempts (MVP §8).

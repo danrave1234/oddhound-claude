@@ -278,9 +278,9 @@ Playwright MCP and agent-browser remain references, not parallel runtimes. Keep 
 | Concurrent runs | Start with 1 active run globally; one fresh Machine per run, 1 per user and 1 per active verified origin (including API origins); extra runs wait in a bounded visible queue |
 | Action streams | 1 per browser page |
 | Role contexts / device profiles | 2 / 2 (desktop 1440×900, mobile ~390×844) |
-| Run wall-clock | 15 minutes |
-| Browser actions | 250 per run |
-| Model turns | 200 per run (raised from 60 on Oct 28, 2026; owner-approved) |
+| Run wall-clock | 60 minutes, a backstop for a stuck run; restarts when the owner hands over after signing in (Oct 28, 2026, owner decision) |
+| Browser actions | Not limited (Oct 28, 2026, owner decision); paced at one action per 300 ms |
+| Model turns | Not limited (Oct 28, 2026, owner decision); the $2 per-run spend cap bounds the run |
 | Model spend | $2 per run, reserved before each call |
 | Browser compute | One new pinned Machine per run, no persistent volume/profile; destroy/confirm on exit. Reserve configured regional compute allowance separately; at most 2 creation attempts per run and no replacement while an uncertain orphan consumes the global slot. Independent reaper enforces expiry/cleanup. |
 | Registration identities | At most 3 newly created synthetic accounts per run within an approved identity/mailbox namespace; count successful unexpected creations too and reserve cleanup capacity. Existing supplied actors remain separately scoped. |
