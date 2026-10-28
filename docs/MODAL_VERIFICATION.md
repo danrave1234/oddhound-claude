@@ -81,9 +81,10 @@ size 0 accepted, spaces-only guest name accepted, cross-account booking readable
 banner, session cookie not Secure, no CSP, pages frameable. The agent registered/signed in, created, edited
 and cancelled bookings with two actors.
 
+GitHub sign-in on the Modal URL: works (OAuth app callback moved from Fly to Modal). Fly apps destroyed.
+
 Not yet run on Modal: the Docker-lab e2e suite (its fixtures live on a local Docker network the Modal
-Sandbox cannot reach); GitHub sign-in (the OAuth app's callback points at Fly); retest on the fixed demo
-build from the live UI.
+Sandbox cannot reach); retest on the fixed demo build from the live UI.
 
 ## Cost estimate
 

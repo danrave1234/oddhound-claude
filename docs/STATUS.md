@@ -152,8 +152,13 @@ targets on Modal, scaling to zero; database stays on Neon. Canary 31/31 on the d
 `sandbox_on`, nftables, proxy-only egress, private/metadata refused, connect-token control, terminate + reaper);
 gVisor fails closed (no netfilter). Real demo run cff8d393 completed on Modal, $0.021, 7 findings. Degradations
 (control over Modal's authenticated proxy instead of a private network; workspace-wide Modal token) and cost
-(about $0.02-0.06 compute per run, about $1/month idle): [MODAL_VERIFICATION.md](MODAL_VERIFICATION.md). Fly still
-runs until the owner stops it.
+(about $0.02-0.06 compute per run, about $1/month idle): [MODAL_VERIFICATION.md](MODAL_VERIFICATION.md).
+
+**Fly removed (Oct 28, owner-approved):** `oddhound-claude-web`, `-demo`, `-demo-fixed` and `-browser` destroyed. The
+GitHub OAuth app "Oddhound (Claude build)" now points at https://danravekeh123--oddhound-web.us-east.modal.run
+(callback `/api/auth/callback/github`); GitHub sign-in tested on Modal and works. §3e below and `infra/fly/` are
+history. Live URLs: web https://danravekeh123--oddhound-web.us-east.modal.run, demo target
+https://danravekeh123--oddhound-demo.us-east.modal.run, fixed build https://danravekeh123--oddhound-demo-fixed.us-east.modal.run.
 
 ## 4. Spec gates (R0–R7) — where this build stands
 
