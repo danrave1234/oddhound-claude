@@ -360,7 +360,9 @@ async function runSetup(page: Page, origin: string, setup: Setup, vars: Record<s
 export function recordIdsInUrl(url: string): string[] {
   const u = new URL(url);
   const fromPath = u.pathname.split('/').filter((p) => /^\d{1,12}$/.test(p));
-  const fromQuery = [...u.searchParams.values()].filter((v) => /^\d{1,12}$/.test(v));
+  // Query flags and paging (?welcome=1, ?page=2) are not record numbers.
+  const flag = /^(welcome|new|page|p|step|tab|sort|limit|offset|count|v|ver|version|success|ok|status|ref|utm_\w+)$/i;
+  const fromQuery = [...u.searchParams.entries()].filter(([k, v]) => !flag.test(k) && /^\d{1,12}$/.test(v)).map(([, v]) => v);
   return [...fromPath, ...fromQuery];
 }
 

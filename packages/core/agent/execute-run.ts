@@ -342,8 +342,10 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
       const acc = recorded.acceptedByPath?.get(path) ?? new Map<string, Set<string>>();
       for (const [k, v] of values) { const s = acc.get(k) ?? new Set<string>(); s.add(v); acc.set(k, s); }
       recorded.acceptedByPath?.set(path, acc);
-      // Only a form on a record-free path (e.g. /bookings/new) creates records; saving /bookings/4/edit does not.
-      if (!/\/\d{1,12}(\/|$)/.test(path)) {
+      // Only a form on a record-free path (e.g. /bookings/new) creates records; saving /bookings/4/edit does not,
+      // and neither does a sign-up or sign-in form (its landing page may carry a flag such as ?welcome=1).
+      const authForm = pendingAuth?.path === path || (recorded.auth && 'path' in recorded.auth && recorded.auth.path === path);
+      if (!authForm && !/\/\d{1,12}(\/|$)/.test(path)) {
         for (const id of recordIdsInUrl(o.url)) if (!recorded.createdBy?.has(id)) recorded.createdBy?.set(id, { path, fields: Object.fromEntries(values), submit: label });
       }
       typed.delete(path);

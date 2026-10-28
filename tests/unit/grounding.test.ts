@@ -77,6 +77,11 @@ describe('recordIdsInUrl', () => {
     expect(recordIdsInUrl('https://x.test/bookings/12/edit')).toEqual(['12']);
     expect(recordIdsInUrl('https://x.test/bookings/new')).toEqual([]);
   });
+  it('ignores flags and paging in the query (the demo sign-up lands on ?welcome=1)', async () => {
+    const { recordIdsInUrl } = await import('../../packages/core/verifier/scenario.ts');
+    expect(recordIdsInUrl('https://x.test/bookings?welcome=1')).toEqual([]);
+    expect(recordIdsInUrl('https://x.test/notes?page=2&id=7')).toEqual(['7']);
+  });
 });
 
 describe('exports for a scenario with a setup record', () => {
