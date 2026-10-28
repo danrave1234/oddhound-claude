@@ -2,4 +2,6 @@ packages:
   - apps/*
   - packages/*
 allowBuilds:
+  cbor-extract: false
   msgpackr-extract: false
+  protobufjs: false

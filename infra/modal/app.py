@@ -1,0 +1,120 @@
+"""Oddhound on Modal: web app, run worker and demo targets. Per-run browsers are Modal Sandboxes created
+by the worker (packages/core/browser/modal-runtime.ts), in the separate secret-free app "oddhound-browser".
+
+Deploy from a clean export of committed code (see infra/modal/README.md):
+
+    ODDHOUND_MODAL_WORKSPACE=<workspace> MODAL_BROWSER_IMAGE_ID=im-... modal deploy infra/modal/app.py
+
+Secrets (Modal Secrets, never in this file):
+  oddhound-web      DATABASE_URL, META_API_KEY, BETTER_AUTH_SECRET, ODDHOUND_CREDENTIAL_KEY,
+                    GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, ODDHOUND_FIXTURE_RESET_TOKEN,
+                    MODAL_TOKEN_ID, MODAL_TOKEN_SECRET (worker creates Sandboxes; web wakes the worker)
+  oddhound-fixture  ODDHOUND_FIXTURE_RESET_TOKEN
+The browser Sandboxes receive none of these.
+"""
+import os
+import pathlib
+import subprocess
+
+import modal
+
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+WORKSPACE = os.environ.get("ODDHOUND_MODAL_WORKSPACE", "")
+BROWSER_IMAGE_ID = os.environ.get("MODAL_BROWSER_IMAGE_ID", "")
+SANDBOX_RUNTIME = os.environ.get("MODAL_SANDBOX_RUNTIME", "")
+
+
+def url(label: str) -> str:
+    return f"https://{WORKSPACE}--{label}.modal.run"
+
+
+app = modal.App("oddhound")
+
+# The same images as on Fly, built from the repository Dockerfiles. Modal needs Python in the image to
+# run its function wrapper; the Node processes still run as the unprivileged "node" user.
+web_image = (
+    modal.Image.from_dockerfile(ROOT / "apps/web/Dockerfile", context_dir=ROOT, add_python="3.12")
+    .dockerfile_commands(["USER root", "ENTRYPOINT []"])
+)
+fixture_image = (
+    modal.Image.from_dockerfile(ROOT / "apps/fixture/Dockerfile", context_dir=ROOT, add_python="3.12")
+    .dockerfile_commands(["USER root", "ENTRYPOINT []"])
+)
+
+web_secret = modal.Secret.from_name("oddhound-web")
+fixture_secret = modal.Secret.from_name("oddhound-fixture")
+
+COMMON_ENV = {
+    "NODE_ENV": "production",
+    "NEXT_TELEMETRY_DISABLED": "1",
+    "ARTIFACT_STORE": "db",
+    "ODDHOUND_ADMIN_EMAILS": "danravekeh123@gmail.com",
+    "META_REASONING_EFFORT": "low",
+    # Development only (same as Fly): Muse Spark 1.3 at the "contributor" price. Remove before other
+    # owners' sites are scanned.
+    "META_MODEL": "muse-spark-1.3-contributor",
+    "BETTER_AUTH_URL": url("oddhound-web"),
+    "DEMO_TARGET_ORIGIN": url("oddhound-demo"),
+    "DEMO_TARGET_RESET_URL": url("oddhound-demo") + "/__lab/reset",
+    "DEMO_TARGET_FIXED_ORIGIN": url("oddhound-demo-fixed"),
+    "DEMO_TARGET_FIXED_RESET_URL": url("oddhound-demo-fixed") + "/__lab/reset",
+    "BROWSER_RUNTIME": "modal",
+    "MODAL_BROWSER_APP": "oddhound-browser",
+    "MODAL_BROWSER_IMAGE_ID": BROWSER_IMAGE_ID,
+    "MODAL_SANDBOX_RUNTIME": SANDBOX_RUNTIME,
+    "MODAL_CONNECT": "token",
+    "WORKER_WAKE": "modal",
+    "MODAL_APP": "oddhound",
+    "MODAL_WORKER_FUNCTION": "worker",
+}
+
+
+def node(args: list[str], cwd: str, extra_env: dict | None = None, wait: bool = False):
+    env = {**os.environ, **COMMON_ENV, **(extra_env or {}), "HOME": "/home/node"}
+    p = subprocess.Popen(["node", *args], cwd=cwd, env=env, user="node", group="node")
+    if wait:
+        code = p.wait()
+        if code != 0:
+            raise RuntimeError(f"node exited with {code}")
+    return p
+
+
+@app.function(image=web_image, secrets=[web_secret], cpu=0.5, memory=1024, min_containers=0, scaledown_window=120, timeout=3600)
+@modal.concurrent(max_inputs=50)
+@modal.web_server(8080, startup_timeout=90, label="oddhound-web")
+def web():
+    node(["scripts/next-with-env.mjs", "start", "--port", "8080", "--hostname", "0.0.0.0"], cwd="/app/apps/web")
+
+
+@app.function(image=web_image, secrets=[web_secret], cpu=1.0, memory=1024, max_containers=1, timeout=2 * 3600)
+def worker():
+    """Drains the Postgres run queue, runs the reapers, and exits after 90 s with no active run."""
+    node(["/app/apps/worker/main.ts"], cwd="/app", extra_env={"ODDHOUND_WORKER_IDLE_EXIT_MS": "90000"}, wait=True)
+
+
+@app.function(image=web_image, schedule=modal.Period(minutes=10), timeout=60)
+def tick():
+    """Safety net: starts the worker so stranded queue entries and orphaned Sandboxes are handled even
+    if a wake-up from the web app was lost. Sandboxes also carry a hard Modal timeout of their own."""
+    worker.spawn()
+
+
+def fixture(mode: str):
+    def serve():
+        node(["server.ts"], cwd="/app", extra_env={"FIXTURE_PORT": "8080", "FIXTURE_HOST": "0.0.0.0", "FIXTURE_MODE": mode})
+    return serve
+
+
+# The demo targets keep their synthetic state in memory, so each runs at most one container.
+@app.function(image=fixture_image, secrets=[fixture_secret], cpu=0.25, memory=256, min_containers=0, max_containers=1, scaledown_window=600, name="demo")
+@modal.concurrent(max_inputs=50)
+@modal.web_server(8080, startup_timeout=30, label="oddhound-demo")
+def demo():
+    fixture("vulnerable")()
+
+
+@app.function(image=fixture_image, secrets=[fixture_secret], cpu=0.25, memory=256, min_containers=0, max_containers=1, scaledown_window=600, name="demo_fixed")
+@modal.concurrent(max_inputs=50)
+@modal.web_server(8080, startup_timeout=30, label="oddhound-demo-fixed")
+def demo_fixed():
+    fixture("fixed")()

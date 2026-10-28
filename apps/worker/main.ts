@@ -13,6 +13,7 @@ import { executeRun } from '../../packages/core/agent/execute-run.ts';
 import { runtimeFromEnv } from '../../packages/core/browser/select.ts';
 import { reapOrphanContainers } from '../../packages/core/browser/docker-runtime.ts';
 import { reapFlyMachines } from '../../packages/core/browser/fly-runtime.ts';
+import { reapModalSandboxes } from '../../packages/core/browser/modal-runtime.ts';
 import { reapStaleRuns, isRunActive } from '../../packages/core/ledger/runs.ts';
 import { purgeExpiredArtifacts } from '../../packages/core/artifacts/store.ts';
 import { labProfileFromEnv } from '../../packages/core/net/ip-policy.ts';
@@ -47,10 +48,21 @@ const worker = startRunWorker(async (runId) => {
 });
 worker.on('error', (e) => log({ event: 'worker.error', message: e.message }));
 
+// Scale to zero (Modal): exit once no job has been active for ODDHOUND_WORKER_IDLE_EXIT_MS.
+const idleExitMs = Number(env.ODDHOUND_WORKER_IDLE_EXIT_MS ?? 0);
+let activeJobs = 0;
+let lastActivity = Date.now();
+worker.on('active', () => { activeJobs++; lastActivity = Date.now(); });
+const settle = () => { activeJobs = Math.max(0, activeJobs - 1); lastActivity = Date.now(); };
+worker.on('completed', settle);
+worker.on('failed', settle);
+
 async function reap() {
   try {
     const runs = await reapStaleRuns(db);
-    const browsers = env.BROWSER_RUNTIME === 'fly' && env.FLY_API_TOKEN
+    const browsers = env.BROWSER_RUNTIME === 'modal'
+      ? await reapModalSandboxes({ appName: env.MODAL_BROWSER_APP ?? 'oddhound-browser' }, (id) => isRunActive(db, id))
+      : env.BROWSER_RUNTIME === 'fly' && env.FLY_API_TOKEN
       ? await reapFlyMachines({ apiToken: env.FLY_API_TOKEN, app: env.FLY_BROWSER_APP ?? 'oddhound-browser', image: env.FLY_BROWSER_IMAGE ?? '', region: env.FLY_REGION ?? 'iad' }, (id) => isRunActive(db, id))
       : env.BROWSER_RUNTIME === 'host' ? [] : await reapOrphanContainers((id) => isRunActive(db, id));
     const artifacts = await purgeExpiredArtifacts(db);
@@ -59,11 +71,16 @@ async function reap() {
 }
 await reap();
 const timer = setInterval(reap, 30_000);
+const idleTimer = idleExitMs > 0 ? setInterval(() => {
+  if (activeJobs === 0 && Date.now() - lastActivity > idleExitMs) { log({ event: 'worker.idle_exit', idleMs: Date.now() - lastActivity }); void shutdown(); }
+}, 5_000) : null;
 
 log({ event: 'worker.ready', runtime: runtime.kind, providers: providers().map((p) => `${p.id}/${p.model}`), offlineTestDouble: offline, hosted });
 
 const shutdown = async () => {
   clearInterval(timer);
+  if (idleTimer) clearInterval(idleTimer);
+  await reap(); // one last orphan sweep before the worker scales to zero
   await worker.close();
   await db.end();
   process.exit(0);

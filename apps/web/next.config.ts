@@ -7,7 +7,7 @@ const root = resolve(fileURLToPath(new URL('.', import.meta.url)), '../..');
 const config: NextConfig = {
   turbopack: { root },
   outputFileTracingRoot: root,
-  serverExternalPackages: ['pg', 'bullmq', 'better-auth', 'parse5'],
+  serverExternalPackages: ['pg', 'bullmq', 'better-auth', 'parse5', 'modal'],
   poweredByHeader: false,
   async headers() {
     return [{

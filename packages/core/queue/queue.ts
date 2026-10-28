@@ -4,6 +4,7 @@
 
 import { Queue, Worker, createPostgresBackend } from 'bullmq';
 import { databaseUrl } from '../db/pool.ts';
+import { wakeWorker } from './wake.ts';
 
 export const RUN_QUEUE = 'oddhound-runs';
 
@@ -18,6 +19,7 @@ export function runQueue() {
 /** Enqueue after admission. jobId = runId, so a duplicate enqueue cannot create a second job. */
 export async function enqueueRun(runId: string): Promise<void> {
   await runQueue().add('run', { runId }, { jobId: runId, attempts: 1, removeOnComplete: 500, removeOnFail: 500 });
+  await wakeWorker();
 }
 
 export function startRunWorker(processor: (runId: string) => Promise<unknown>, concurrency = 1) {

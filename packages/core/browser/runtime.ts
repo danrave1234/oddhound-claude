@@ -3,6 +3,7 @@
 //   local: Playwright Chromium on this machine (sandbox on, non-root on Linux), all traffic through the
 //          run-scoped egress proxy. Used for development, tests and the local lab.
 //   fly:   one fresh Fly Machine per run in the secret-free oddhound-browser app (see fly-runtime.ts).
+//   modal: one fresh Modal Sandbox per run from the pinned browser image (see modal-runtime.ts).
 
 import { chromium, type Browser, type BrowserContext } from 'playwright';
 import { startEgressProxy, type EgressDecision, type EgressProxy } from '../net/egress-proxy.ts';
@@ -11,7 +12,7 @@ import { DEVICE_PROFILES, USER_AGENT_SUFFIX, type DeviceProfileName } from '../c
 
 export type ProvisionedBrowser = {
   ref: string;
-  runtime: 'local' | 'fly';
+  runtime: 'local' | 'fly' | 'modal';
   browser: Browser;
   sandboxVerdict: string;
   egressStats: () => { requests: number; bytes: number; denied: number; exhausted: string | null };
@@ -27,7 +28,7 @@ export type ProvisionOptions = {
 };
 
 export interface BrowserRuntime {
-  readonly kind: 'local' | 'fly';
+  readonly kind: 'local' | 'fly' | 'modal';
   provision(opts: ProvisionOptions): Promise<ProvisionedBrowser>;
 }
 
