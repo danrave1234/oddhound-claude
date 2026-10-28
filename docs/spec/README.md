@@ -47,7 +47,7 @@ Each topic has one owning document. Other documents summarize and link to it. If
 ## Locked decisions
 
 - **Active testing is the product.** After ownership verification and one run-level capability/account/data grant, the agent discovers registration/login, creates/edits/cancels synthetic records and tries unexpected values/order/repeats. No click script or per-click approval. Observation-only is optional; production active writes require explicit owner permission. Each active API origin is verified separately. Unverified active targets/private addresses are refused. Sign-in-free live demo and recorded replay remain separately gated.
-- **Quotas protect the credit:** 3 runs per user per day, a daily public spend ceiling with a kill switch, $2 per run, one run per site at a time.
+- **Quotas protect the credit:** a daily public spend ceiling with a kill switch, $2 per run, one run per site at a time.
 - **Browser:** one **fresh Fly Machine per run** in a separate app without platform credentials, public browser service or persistent volume/profile. Private control, sandboxed Chromium, smokescreen/nftables and a tested permission layer. Destroy/confirm after each run; independent orphan reaper. Fly/CDP are candidates pending proof; E2B/mitmproxy are explicit fallbacks, not working integrations.
 - **Models:** **Direct Meta `muse-spark-1.3`** is primary. The backup is Baseten's event alias `meta-models/muse-spark-open-1026` once confirmed, or Fireworks.
 - **Data:** one PostgreSQL + Drizzle for data, auth and the queue (BullMQ 6 Postgres backend); private S3-compatible artifacts. No Redis.

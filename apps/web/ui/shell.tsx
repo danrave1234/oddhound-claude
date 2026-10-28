@@ -39,12 +39,3 @@ export function Shell({ active, user, children, toolbar }: { active: string; use
   );
 }
 
-/** Honest quota meter: used vs. allowed runs today, with the text alongside. */
-export function RunsLeft({ left, total }: { left: number; total: number }) {
-  return (
-    <span className="pill-stat tabular" title="Runs left today (resets at 00:00 UTC)">
-      <span className="meter" aria-hidden>{Array.from({ length: total }, (_, i) => <i key={i} className={i < left ? 'on' : ''} />)}</span>
-      {left} of {total} runs left today
-    </span>
-  );
-}

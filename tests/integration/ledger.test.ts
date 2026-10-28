@@ -68,15 +68,13 @@ describe('admission (SELF-15/18)', () => {
     expect((await admitRun(db, { principal: 'a', ownerId: null, projectId: null, mode: 'verified_site', contract: c, spendAccount: 'public' })).ok).toBe(true);
     expect(await admitRun(db, { principal: 'b', ownerId: null, projectId: null, mode: 'verified_site', contract: c, spendAccount: 'public' })).toEqual({ ok: false, reason: 'site_busy' });
   });
-  it('one pending run per principal, and 3 runs per user per day', async () => {
+  it('one pending run per principal, and no daily run count', async () => {
     await db.query(`INSERT INTO "user" (id, name, email) VALUES ('u1','U','u1@example.test')`);
     const admit = () => admitRun(db, { principal: 'user:u1', ownerId: 'u1', projectId: null, mode: 'verified_site', contract: contract(), spendAccount: 'public' });
     const first = await admit();
     expect(first.ok).toBe(true);
     expect(await admit()).toEqual({ ok: false, reason: 'principal_pending' });
-    for (let i = 0; i < 2; i++) { await db.query(`UPDATE runs SET status = 'completed' WHERE principal = 'user:u1'`); expect((await admit()).ok).toBe(true); }
-    await db.query(`UPDATE runs SET status = 'completed' WHERE principal = 'user:u1'`);
-    expect(await admit()).toEqual({ ok: false, reason: 'daily_quota' });
+    for (let i = 0; i < 5; i++) { await db.query(`UPDATE runs SET status = 'completed' WHERE principal = 'user:u1'`); expect((await admit()).ok).toBe(true); }
   });
   it('anonymous demo: one per session per hour and one live demo globally, however many sessions race', async () => {
     const results = await Promise.all(Array.from({ length: 10 }, (_, i) =>

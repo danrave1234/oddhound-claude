@@ -6,7 +6,6 @@ export const LIMITS = {
   concurrentRunsGlobal: 1,
   pendingRunsGlobal: 20,
   pendingRunsPerPrincipal: 1,
-  runsPerUserPerDay: 3,
   runWallClockMs: 15 * 60_000,
   queueEntryTtlMs: 15 * 60_000,
   browserActionsPerRun: 250,

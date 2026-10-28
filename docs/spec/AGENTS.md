@@ -66,7 +66,7 @@ bounded finalization -> destroy/confirm Machine; independent orphan reaper
 - **Active testing is the core.** Run-level grants allow registration/login and synthetic create/edit/cancel, boundary values, repeats and unusual ordering without a click script or per-click approval. Permit approved write methods. Enforce origin/actor/fixture/capability/denied-effect/budget boundaries outside the model. Observation-only is optional; production active writes require explicit owner permission and suitable test data/accounts. Generic browser code cannot guarantee the business effects of arbitrary GETs or UI actions (MVP §17).
 - Also ship a sign-in-free **demo target** (Oddhound's own seeded app with labelled defects) and a read-only **demo replay** of a real recorded run.
 - Quotas are P0, because real users spend the $150 credit:
-  - 3 runs per user per day;
+  - no per-user daily run count (removed Oct 28, 2026, owner decision); one queued run per user;
   - 1 run per site at a time;
   - a daily public spend ceiling with an admin kill switch;
   - a $2 per-run model cap reserved before each call;
@@ -114,7 +114,7 @@ bounded finalization -> destroy/confirm Machine; independent orphan reaper
 **UI**
 - **Apple/macOS-inspired** three-pane workspace: translucent sidebar, compact toolbar, segmented controls, resizable panes, evidence inspector. Original hound branding. Do not redesign.
 - **No Lucide anywhere.** shadcn generates Lucide imports by default, so rewrite each added component to the local `Icon` layer (`packages/ui/icons`: curated `@primer/octicons-react` + original SVGs), or use the Radix primitive directly. A lint rule bans `lucide-react`.
-- Site verification is the first setup step. Show remaining runs today. The landing page offers **Scan your site**, **Try the demo target** and **Watch a demo replay**.
+- Site verification is the first setup step. The landing page offers **Scan your site**, **Try the demo target** and **Watch a demo replay**.
 
 **Truthfulness**
 - Use only the canonical status values in MVP plan §10. Do not invent new ones.

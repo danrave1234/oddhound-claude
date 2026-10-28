@@ -1,11 +1,10 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { RunsLeft, Shell } from '@/ui/shell';
+import { Shell } from '@/ui/shell';
 import { HoundArt, Icon } from '@/ui/icons';
 import { currentUser, db, mayScanVerifiedSites } from '@/lib/server';
 import { publicStatus } from '@/lib/status-data';
 import { QuickDemoTile } from './quick-demo';
-import { LIMITS } from '@core/contracts/limits.ts';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,15 +20,12 @@ export default async function Projects() {
       (SELECT verified FROM site_verifications sv WHERE sv.project_id = p.id AND sv.origin = p.origin ORDER BY revision DESC LIMIT 1) AS verified,
       (SELECT max(created_at) FROM runs r WHERE r.project_id = p.id) AS last_run
     FROM projects p WHERE p.owner_id = $1 ORDER BY p.created_at DESC`, [user.id])).rows;
-  const today = (await db().query(`SELECT count(*)::int AS n FROM runs WHERE owner_id = $1 AND day_bucket = (now() AT TIME ZONE 'utc')::date AND counted_against_quota`, [user.id])).rows[0].n as number;
   const allowed = mayScanVerifiedSites(user);
   const status = await publicStatus();
-  const left = Math.max(0, LIMITS.runsPerUserPerDay - today);
   return (
     <Shell active="/app" user={user} toolbar={<>
       <span className="toolbar-title">Projects</span>
       <span className="toolbar-spacer" />
-      <RunsLeft left={left} total={LIMITS.runsPerUserPerDay} />
       {allowed && <Link className="btn btn-primary" href="/app/projects/new"><Icon name="plus" /> New project</Link>}
     </>}>
       <div className="page-head">

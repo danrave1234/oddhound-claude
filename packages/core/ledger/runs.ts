@@ -19,7 +19,7 @@ export type AdmissionInput = {
 
 export type AdmissionResult =
   | { ok: true; runId: string }
-  | { ok: false; reason: 'kill_switch' | 'user_revoked' | 'principal_pending' | 'queue_full' | 'daily_quota' | 'site_busy' | 'demo_hourly_limit' | 'demo_busy' };
+  | { ok: false; reason: 'kill_switch' | 'user_revoked' | 'principal_pending' | 'queue_full' | 'site_busy' | 'demo_hourly_limit' | 'demo_busy' };
 
 export function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -51,11 +51,10 @@ export async function admitRun(db: Db, input: AdmissionInput): Promise<Admission
       if (recent.rows[0].n >= 1) return { ok: false, reason: 'demo_hourly_limit' };
       const activeDemo = await tx.query(`SELECT count(*)::int AS n FROM runs WHERE mode = 'demo_target' AND status IN ${ACTIVE}`);
       if (activeDemo.rows[0].n >= 1) return { ok: false, reason: 'demo_busy' };
-    } else if (input.ownerId && input.spendAccount === 'public') {
-      // The per-user daily quota protects the public budget; development-budget runs are operator-only.
-      const today = await tx.query(`SELECT count(*)::int AS n FROM runs WHERE owner_id = $1 AND day_bucket = (now() AT TIME ZONE 'utc')::date AND counted_against_quota`, [input.ownerId]);
-      if (today.rows[0].n >= LIMITS.runsPerUserPerDay) return { ok: false, reason: 'daily_quota' };
     }
+    // No per-user daily run count (removed Oct 28, 2026, owner decision): signed-in developers run as often as they
+    // choose. Money stays bounded by the per-run cap and the daily/lifetime spend ceilings, and one run per user is
+    // queued at a time.
     // One active run per origin, across every project and user (the lock is the origin, not the project).
     const origins = [input.contract.target.origin, ...input.contract.target.apiOrigins.map((a) => a.origin)];
     const busy = await tx.query(`SELECT count(*)::int AS n FROM runs WHERE status IN ${ACTIVE} AND active_origins && $1::text[]`, [origins]);

@@ -284,7 +284,7 @@ Playwright MCP and agent-browser remain references, not parallel runtimes. Keep 
 | Model spend | $2 per run, reserved before each call |
 | Browser compute | One new pinned Machine per run, no persistent volume/profile; destroy/confirm on exit. Reserve configured regional compute allowance separately; at most 2 creation attempts per run and no replacement while an uncertain orphan consumes the global slot. Independent reaper enforces expiry/cleanup. |
 | Registration identities | At most 3 newly created synthetic accounts per run within an approved identity/mailbox namespace; count successful unexpected creations too and reserve cleanup capacity. Existing supplied actors remain separately scoped. |
-| Per-user quota | 3 runs per user per day for public sign-ups (raise per user by hand) |
+| Per-user quota | None (removed Oct 28, 2026, owner decision): one queued run per user; spend ceilings bound cost |
 | Global spend | Daily public-use ceiling (start at $7/day) with an admin kill switch; development and evaluation tracked separately |
 | Target politeness | ≤ 1 agent action per second, identifiable user agent `Oddhound/1.0 (+<site>/bot)`, no stealth |
 | Target traffic | Starting caps: 1,500 HTTP requests, 6 concurrent requests and 50 MiB received per run, across all roles/devices/subresources; 8 MiB per resource. Count redirect hops, probes and resets. Slow/stop on 429/503 and respect Retry-After. |
