@@ -10,7 +10,9 @@ export const LIMITS = {
   runWallClockMs: 15 * 60_000,
   queueEntryTtlMs: 15 * 60_000,
   browserActionsPerRun: 250,
-  modelTurnsPerRun: 60,
+  // Raised from 60 on Oct 28, 2026 (owner-approved): runs stopped at the turn cap with most of the time,
+  // actions and money unused. The $2 spend cap and 15-minute clock still bound every run.
+  modelTurnsPerRun: 200,
   modelSpendPerRunMicros: 2 * USD,
   publicDailyMicros: 7 * USD,
   publicLifetimeMicros: 50 * USD,

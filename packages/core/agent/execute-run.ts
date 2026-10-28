@@ -29,6 +29,8 @@ import { RunSession, SiteUnreachable } from './session.ts';
 import { ToolArgs, BROWSER_TOOLS, boundaryValues, agentModeFromEnv, toolDefinitionsFor, toolOffered, type AgentMode, type BatchStep, type Charter, type ToolName } from './tools.ts';
 import { systemPrompt } from './prompt.ts';
 import { findByLabel, usesRef } from './by-label.ts';
+import { blockedReason, disabledReason } from '../browser/click-check.ts';
+import { readSiteMap } from '../browser/site-map.ts';
 import { runHandoff, HandoffEnded } from './handoff.ts';
 import { CLICK_ROLES, controlFor, newReplaySessions, recordIdsInUrl, replayScenario, scenarioDefect, scenarioHash, type Setup, type AuthRecipe, type Oracle, type ReplayEnv, type Scenario, type TraceStep } from '../verifier/scenario.ts';
 
@@ -268,9 +270,20 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
   const tools = toolDefinitionsFor(mode);
   await ev('agent.mode', { mode, tools: tools.map((t) => t.function.name) });
   let pendingAuth: { path: string; fields: Record<string, string> } | null = null;
+  // The pages the site lists about itself, so the plan starts from the whole site, not only what one page links to.
+  const allowedPath = (p: string) => {
+    const path = new URL(p, contract.target.origin).pathname;
+    return !contract.deniedPathPrefixes.some((d) => path.startsWith(d)) && !pathHasDeniedKeyword(path, contract.deniedPathKeywords);
+  };
+  const siteMap = await readSiteMap(await session.page(), contract.target.origin, allowedPath).catch(() => null);
+  const knownPaths = siteMap?.paths ?? [];
+  if (siteMap) await ev('site.mapped', { pages: knownPaths.length, fromSitemap: siteMap.sources.sitemap, fromLinks: siteMap.sources.links, sitemaps: siteMap.sitemaps, sample: knownPaths.slice(0, 30) });
+  const listed = knownPaths.length
+    ? `\nPages this site lists (sitemap.xml, robots.txt and links on the first page; ${knownPaths.length}${knownPaths.length > 80 ? ', first 80 shown' : ''}): ${knownPaths.slice(0, 80).join(', ')}. Use them to plan and to reach pages directly with navigate.`
+    : '';
   const messages: ChatMessage[] = [
     { role: 'system', content: systemPrompt(contract, mode) },
-    { role: 'user', content: `Begin. You are actor A on desktop, on ${contract.target.origin}/. Start with observe.` },
+    { role: 'user', content: `Begin. You are actor A on desktop, on ${contract.target.origin}/. Start with observe.${listed}` },
   ];
 
   /** Oddhound's own record of the run so far, used when the conversation is compacted. */
@@ -285,12 +298,14 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
     const last = session.lastObservation ? formatObservation(session.lastObservation) : 'No page observed yet.';
     const cov = coverage.summary();
     const todo = cov.unexercised.map((u) => `${u.route} ${u.kind} "${u.label}"`).join('; ');
+    const unvisited = knownPaths.filter((p) => !recorded.controlsByPath.has(new URL(p, contract.target.origin).pathname));
     return [
       'NOTEBOOK (kept by Oddhound; the earlier conversation was compacted to save cost)',
       `Budget: turn ${turns}/${LIMITS.modelTurnsPerRun}, action ${actions}/${LIMITS.browserActionsPerRun}. Last action #${seq}. You are actor ${session.actor} on ${session.device}.`,
       recorded.auth ? `Sign-up recipe that worked: ${recorded.auth.kind === 'handoff' ? 'owner handoff session' : `${recorded.auth.path} -> "${recorded.auth.successText}"`}` : 'No sign-up recorded yet.',
       `Synthetic identities:\n${ids.join('\n') || '- none'}`,
       `Pages seen:\n${pages.join('\n') || '- none'}`,
+      ...(unvisited.length ? [`Pages the site lists that you have not visited (${unvisited.length}): ${unvisited.slice(0, 40).join(', ')}`] : []),
       `Test plan:\n${charters.join('\n') || '- none yet: call plan_tests'}`,
       `Findings recorded so far:\n${found.join('\n') || '- none'}`,
       `Coverage: ${cov.exercised} of ${cov.total} controls on ${cov.pages} observed page(s) exercised; ${cov.blocked} blocked by policy.${todo ? ` Not yet exercised (sample): ${todo}.` : ''}`,
@@ -336,6 +351,10 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
   };
   let lastStep: StepInfo | null = null;
   const batches = new Map<number, BatchRecord>();
+  // Batch steps that failed, by page path + tool + control label. A batch that tries the same step after it has
+  // already failed twice is refused before it runs, so the agent changes approach instead of looping.
+  const failedSteps = new Map<string, { count: number; seq: number; error: string }>();
+  const stepKey = (path: string, tool: string, label: string | undefined) => `${path}|${tool}|${(label ?? '').trim().toLowerCase()}`;
   let lastCoverage = '';
   // Controls the run may not use count as blocked by policy, not as untested.
   const coverage = new CoverageTracker((el, pageUrl) => {
@@ -587,6 +606,15 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
         const modelObs = session.turnObservation;
         if (!modelObs) return { text: 'Observe the page first.' };
         const steps = args.steps as BatchStep[];
+        const planPath = new URL(modelObs.url).pathname;
+        const labelOfStep = (st: Record<string, any>) => typeof st.label === 'string' ? st.label : modelObs.elements.find((e) => e.ref === st.ref)?.label;
+        for (const [i, st] of steps.entries()) {
+          const prior = failedSteps.get(stepKey(planPath, st.tool, labelOfStep(st)));
+          if (prior && prior.count >= 2) {
+            await ev('batch.refused', { step: i + 1, tool: st.tool, label: labelOfStep(st) ?? null, failures: prior.count });
+            return { text: `Batch not run: step ${i + 1} (${st.tool} "${labelOfStep(st) ?? (st as Record<string, any>).ref}") already failed ${prior.count} times on ${planPath}, last at #${prior.seq}: ${prior.error}. Do not retry it. Record what that tells you (with report_candidate if it breaks a rule, or a plan_tests note), then test something else.` };
+          }
+        }
         const no = batches.size + 1;
         const rec: BatchRecord = { no, goal: args.goal, steps: [] };
         batches.set(no, rec);
@@ -645,7 +673,11 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
             const recStep: BatchRecord['steps'][number] = { seq: info.seq, ...(expect ? { expect } : {}), ...(info.stated ? { stated: info.stated } : {}) };
             rec.steps.push(recStep);
             let line = `step ${i + 1} ${tool} #${info.seq}: ${info.error ? `FAILED: ${info.error}` : 'ok'}${info.stated ? ` (value from stated ${info.stated})` : ''}`;
-            if (info.error) surprise = 'a step failed';
+            if (info.error) {
+              surprise = 'a step failed';
+              const k = stepKey(pathBefore, tool, labelOfStep(st as Record<string, any>));
+              failedSteps.set(k, { count: (failedSteps.get(k)?.count ?? 0) + 1, seq: info.seq, error: info.error });
+            }
             if (info.notes.length) { line += ` | ${info.notes.join(' | ')}`; surprise ??= 'Oddhound detected a problem'; }
             if (info.dialogs.length) { line += ` | dialog dismissed: ${info.dialogs.join(' | ')}`; surprise ??= 'a dialog opened'; }
             // A blocked request to the verified site, or a blocked navigation, changes what the step did. Blocked
@@ -767,7 +799,12 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
         if (loc instanceof Error) return { text: loc.message };
         const clickedLabel = session.labelOf(args.ref);
         const clickPath = new URL((await session.page()).url()).pathname;
-        const text = await runBrowserAction(name, args, `Clicked ${session.describe(args.ref)}`, async () => { await loc.click({ timeout: 5_000 }); await (await session.page()).waitForLoadState('domcontentloaded'); });
+        const text = await runBrowserAction(name, args, `Clicked ${session.describe(args.ref)}`, async () => {
+          const off = await disabledReason(loc);
+          if (off) throw new Error(off);
+          try { await loc.click({ timeout: 5_000 }); } catch (e) { throw new Error((await blockedReason(loc)) ?? (e as Error).message); }
+          await (await session.page()).waitForLoadState('domcontentloaded');
+        });
         noteSubmit(clickPath, clickedLabel);
         if (pendingAuth && clickedLabel && Object.values(pendingAuth.fields).includes('{password}') && !recorded.auth) {
           const o = session.lastObservation;

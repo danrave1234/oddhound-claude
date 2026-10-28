@@ -88,7 +88,7 @@ Never put model/API keys, raw passwords, cookies or bearer tokens in the prompt.
 
 Model spend, sandbox CPU/memory time, artifacts, video rendering, and optional audio services are separate meters. Use one ledger with per-provider subaccounts. Count billed tokens conservatively, including reasoning/output usage as documented for the selected endpoint; avoid double-counting fields that are subsets. Unknown usage reserves budget rather than being counted as free. Reconcile estimates against bills; don't hard-code a dubious scraped price table.
 
-**Starting controls:** the canonical run limits (concurrency, 15-minute timeout, 250 browser actions, 60 model turns, $2 model budget, separate sandbox compute cap and project-wide ceiling) are in [MVP plan §8](Oddhound-MVP-Build-Plan-v1.4.md#8-token-and-speed-strategy). They are engineering defaults, not measured run costs or provider limits.
+**Starting controls:** the canonical run limits (concurrency, 15-minute timeout, 250 browser actions, 200 model turns, $2 model budget, separate sandbox compute cap and project-wide ceiling) are in [MVP plan §8](Oddhound-MVP-Build-Plan-v1.4.md#8-token-and-speed-strategy). They are engineering defaults, not measured run costs or provider limits.
 
 ## 5. Browser isolation: one fresh Fly Machine per run
 
