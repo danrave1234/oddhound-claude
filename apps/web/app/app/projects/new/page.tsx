@@ -13,7 +13,7 @@ export default async function NewProject() {
   if (!mayScanVerifiedSites(user)) redirect('/app');
   return (
     <Shell active="/app" user={user} toolbar={<div className="crumbs"><Link href="/app">Projects</Link><span className="muted">/</span><strong>New project</strong></div>}>
-      <div style={{ maxWidth: 680 }}>
+      <div className="content-narrow">
         <SetupSteps current={1} />
         <div className="page-head" style={{ marginBottom: 18 }}>
           <div>

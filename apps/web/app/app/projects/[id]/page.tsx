@@ -32,7 +32,7 @@ export default async function Project({ params }: { params: Promise<{ id: string
   const host = new URL(project.origin).hostname;
   return (
     <Shell active="/app" user={user} toolbar={<div className="crumbs"><Link href="/app">Projects</Link><span className="muted">/</span><strong className="truncate">{project.name}</strong></div>}>
-      <div className="stack" style={{ maxWidth: 860 }}>
+      <div className="stack content-medium">
         <div>
           <SetupSteps current={sv.verified ? 3 : 2} />
           <div className="page-head" style={{ marginBottom: 0 }}>

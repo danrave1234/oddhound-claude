@@ -306,7 +306,9 @@ fieldset { min-width: 0; }
 .toolbar .crumbs strong { font-weight: 650; }
 .toolbar-title { font-size: 14.5px; font-weight: 650; letter-spacing: -0.01em; }
 .toolbar-spacer { margin-left: auto; }
-.content { padding: 28px 32px 48px; max-width: 1120px; box-sizing: border-box; }
+.content { padding: 28px 32px 48px; max-width: 1120px; margin-inline: auto; box-sizing: border-box; }
+.content-narrow { max-width: 720px; margin-inline: auto; }
+.content-medium { max-width: 880px; margin-inline: auto; }
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 22px; }
 .page-head .lead { font-size: 14.5px; margin-top: 4px; max-width: 640px; }
 .stack { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
