@@ -39,6 +39,9 @@ function providers(): ChatProvider[] {
 }
 
 const log = (o: Record<string, unknown>) => console.log(JSON.stringify({ at: new Date().toISOString(), worker: workerId, ...o }));
+// A stray rejected promise (for example a failed fire-and-forget event write) is logged, never allowed to kill
+// the worker in the middle of someone's run.
+process.on('unhandledRejection', (e) => log({ event: 'worker.unhandled_rejection', message: (e as Error)?.message ?? String(e) }));
 
 const worker = startRunWorker(async (runId) => {
   log({ event: 'run.start', runId });

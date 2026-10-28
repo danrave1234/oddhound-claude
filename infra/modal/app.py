@@ -103,7 +103,7 @@ def web():
     node(["scripts/next-with-env.mjs", "start", "--port", "8080", "--hostname", "0.0.0.0"], cwd="/app/apps/web")
 
 
-@app.function(image=web_image, secrets=[web_secret], env=COMMON_ENV, cpu=0.5, memory=1024, max_containers=1, timeout=2 * 3600)
+@app.function(image=web_image, secrets=[web_secret], env=COMMON_ENV, cpu=0.5, memory=1024, max_containers=1, timeout=24 * 3600)  # runs drain back to back; 2 h cut a second run short
 def worker(idle_exit_ms: int = 90_000):
     """Drains the Postgres run queue, runs the reapers, and exits after idle_exit_ms with no active run."""
     node(["/app/apps/worker/main.ts"], cwd="/app", extra_env={"ODDHOUND_WORKER_IDLE_EXIT_MS": str(int(idle_exit_ms))}, wait=True)

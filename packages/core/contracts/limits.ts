@@ -9,7 +9,8 @@ export const LIMITS = {
   // Oct 28, 2026 (owner decision): the agent runs free inside the cost cap and the rules. Turns and actions are
   // not capped; the clock is only a backstop for a stuck run (browser machine time costs money too).
   runWallClockMs: 60 * 60_000,
-  queueEntryTtlMs: 15 * 60_000,
+  // A queued run may wait behind one full run (30 min sign-in + 60 min clock + finalization).
+  queueEntryTtlMs: 105 * 60_000,
   browserActionsPerRun: Number.POSITIVE_INFINITY,
   modelTurnsPerRun: Number.POSITIVE_INFINITY,
   modelSpendPerRunMicros: 2 * USD,

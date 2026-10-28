@@ -87,13 +87,19 @@ export async function executeRun(deps: ExecuteDeps, runId: string): Promise<RunS
   const run = (await db.query<RunRow>('SELECT * FROM runs WHERE id = $1', [runId])).rows[0]!;
   const contract = RunContractSchema.parse(run.contract);
   const ev = (type: string, payload: Record<string, unknown> = {}) => appendEvent(db, runId, type, payload);
+  /** For callbacks nobody awaits: a failed event write must never become an unhandled rejection. */
+  const evQuiet = (type: string, payload: Record<string, unknown> = {}) => { ev(type, payload).catch(() => {}); };
   await ev('run.status', { status: 'provisioning' });
 
   // Stop/expiry watcher: aborts in-flight inference as soon as the fence is persisted.
   const abort = new AbortController();
   const watcher = setInterval(async () => {
     try {
-      const r = await db.query<{ stop_requested_at: Date | null; expires_at: Date | null }>('SELECT stop_requested_at, expires_at FROM runs WHERE id = $1', [runId]);
+      // The watcher also keeps the run's heartbeat fresh, so long model retries or slow replays (no lease
+      // check for minutes) are never mistaken for a lost worker by the stale-run reaper.
+      const r = await db.query<{ stop_requested_at: Date | null; expires_at: Date | null }>(
+        'UPDATE runs SET heartbeat_at = now() WHERE id = $1 AND lease_generation = $2 RETURNING stop_requested_at, expires_at', [runId, generation]);
+      if (!r.rowCount) { abort.abort(); return; } // the lease moved on: this worker no longer owns the run
       const row = r.rows[0];
       if (row?.stop_requested_at || (row?.expires_at && row.expires_at.getTime() < Date.now())) abort.abort();
     } catch { /* keep polling */ }
@@ -172,17 +178,17 @@ export async function executeRun(deps: ExecuteDeps, runId: string): Promise<RunS
     const egress: { exhausted: string | null } = { exhausted: null };
     browser = await deps.runtime.provision({
       runId, lab: deps.lab,
-      onEgress: (d) => { if (!d.allowed) void ev('egress.denied', { host: d.host, port: d.port, reason: d.reason }); },
+      onEgress: (d) => { if (!d.allowed) evQuiet('egress.denied', { host: d.host, port: d.port, reason: d.reason }); },
       // The traffic cap ends testing, not the run: the agent loop stops at its next turn and the run still
       // finalizes (replays that need the network then come back inconclusive, which is recorded as such).
-      onEgressExhausted: (r) => { if (!egress.exhausted) { egress.exhausted = r; void ev('egress.exhausted', { reason: r }); } },
+      onEgressExhausted: (r) => { if (!egress.exhausted) { egress.exhausted = r; evQuiet('egress.exhausted', { reason: r }); } },
     });
     await setRunStatus(db, runId, generation, 'running', { browserState: 'ready', browserRef: browser.ref, sandboxVerdict: browser.sandboxVerdict });
     await ev('browser.ready', { runtime: browser.runtime, ref: browser.ref, sandbox: browser.sandboxVerdict });
     if (deps.hosted && browser.sandboxVerdict !== 'sandbox_on') { await finish('blocked', `chromium_sandbox_not_confirmed:${browser.sandboxVerdict}`); return await done(); }
     await ev('run.status', { status: 'running' });
 
-    const onScope = (d: ScopeDecision) => { if (!d.allowed) void ev('scope.denied', { url: redactUrl(d.url), method: d.method, reason: d.reason }); };
+    const onScope = (d: ScopeDecision) => { if (!d.allowed) evQuiet('scope.denied', { url: redactUrl(d.url), method: d.method, reason: d.reason }); };
     session = new RunSession(browser.browser, policyFromContract(contract), onScope);
 
     // 3b. Owner sign-in handoff: the owner signs in through the live view; the model sees none of it.
@@ -204,12 +210,15 @@ export async function executeRun(deps: ExecuteDeps, runId: string): Promise<RunS
     const loop = await agentLoop({ deps, runId, generation, contract, run, provider, price, session, ev, abort, candidates, recorded, egress });
     if (loop.stopReason) stopReason = loop.stopReason;
 
-    // 5. Independent verification of every candidate (fresh contexts, fresh identities).
-    await ev('run.phase', { phase: 'verifying', candidates: candidates.length });
-    await verifyCandidates({ db, runId, generation, run, contract, candidates, browser, ev, handoffState });
-
-    // 6. Deterministic configuration observations from captured responses (no model involvement).
+    // 5. Deterministic configuration observations from captured responses (no model involvement). Recorded
+    //    first, so they survive however verification ends.
     await recordConfigurationObservations(db, run, session, contract, ev);
+
+    // 6. Independent verification of every candidate (fresh contexts, fresh identities), until a minute before
+    //    the run's expiry; candidates left over are recorded as not verified, never dropped.
+    await ev('run.phase', { phase: 'verifying', candidates: candidates.length });
+    const expiry = (await db.query<{ expires_at: Date | null }>('SELECT expires_at FROM runs WHERE id = $1', [runId])).rows[0]?.expires_at?.getTime() ?? Date.now() + 5 * 60_000;
+    await verifyCandidates({ db, runId, generation, run, contract, candidates, browser, ev, handoffState, deadline: expiry - 60_000 });
 
     // Truthful status: a model provider failure is a failed run, not a completed one.
     const ended = loop.stopReason === 'provider_error' ? 'failed'
@@ -691,7 +700,8 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
             }
             if (refError) { surprise = 'stale element'; lines.push(`step ${i + 1} ${tool}: not run (${refError})`); break; }
             const pathBefore = new URL((await session.page()).url()).pathname;
-            const failKey = stepKey(session.lastObservation ?? modelObs, tool, labelOfStep(st as Record<string, any>));
+            const ident = labelOfStep(st as Record<string, any>) ?? ['path', 'key', 'to', 'direction', 'value', 'ref'].map((k) => (st as Record<string, any>)[k]).filter((x) => x !== undefined).join(' ');
+            const failKey = stepKey(session.lastObservation ?? modelObs, tool, ident);
             const prior = failedSteps.get(failKey);
             if (prior && prior.count >= 2) {
               surprise = 'a step that keeps failing here';
@@ -1019,6 +1029,8 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
               if (!again.ok) { await ev('budget.denied', { reason: again.reason, attemptedMicros: reserve }); return { stopReason: `budget_${again.reason}` }; }
             }
             await sleep(notFound ? Math.min(4_000, 600 * attempt) : [2_000, 5_000, 10_000][serverRetries - 1]!);
+            if (abort.signal.aborted) { await releaseSpend(db, requestKey); throw new FencedError('stop_or_expiry_during_inference'); }
+            await assertLease(db, runId, generation);
           }
         }
       } catch (e) {
@@ -1058,7 +1070,7 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
         await ev('budget.denied', { reason: 'exploration_spend_cap', capMicros: a.deps.explorationSpendCapMicros });
         return { stopReason: 'budget_exploration_cap' };
       }
-      spentMicros = (await runSpend(db, runId)).settled;
+      { const sp = await runSpend(db, runId); spentMicros = sp.settled + sp.outstanding; }
       const nearEnd = spentMicros >= LIMITS.modelSpendPerRunMicros * 0.9 || Date.now() > expiresAt - verificationReserveMs() - 90_000;
       if (nearEnd && !wrapUpSent && !finished) {
         // Budget awareness: tell the model to report what it found and wrap up before the hard limit.
@@ -1206,11 +1218,11 @@ function replayEnvFor(db: Db, runId: string, browser: ProvisionedBrowser, contra
     sessions: newReplaySessions(),
     newContext: async (device, storageState) => {
       const ctx = await newScopedContext(browser.browser, device, storageState);
-      await attachScope(ctx, policy, (d) => { if (!d.allowed) void ev('scope.denied', { url: redactUrl(d.url), method: d.method, reason: d.reason, phase: 'verification' }); });
+      await attachScope(ctx, policy, (d) => { if (!d.allowed) ev('scope.denied', { url: redactUrl(d.url), method: d.method, reason: d.reason, phase: 'verification' }).catch(() => {}); });
       return ctx;
     },
     identity: () => syntheticIdentity(runId, 100 + ++n, contract.registration.emailDomain),
-    onIdentityCreated: (role) => { void ev('identity.created', { role, phase: 'verification' }); },
+    onIdentityCreated: (role) => { ev('identity.created', { role, phase: 'verification' }).catch(() => {}); },
     handoffState,
     inScope: (o) => o === policy.primaryOrigin || policy.apiOrigins.has(o),
   };
@@ -1230,7 +1242,7 @@ async function recordExecution(db: Db, scenarioId: string, runId: string, kind: 
     [scenarioId, runId, kind, hash, outcome, JSON.stringify(observed), evidence]);
 }
 
-async function verifyCandidates(v: { db: Db; runId: string; generation: number; run: RunRow; contract: RunContract; candidates: Candidate[]; browser: ProvisionedBrowser; ev: (t: string, p?: Record<string, unknown>) => Promise<number>; handoffState?: StorageState }) {
+async function verifyCandidates(v: { db: Db; runId: string; generation: number; run: RunRow; contract: RunContract; candidates: Candidate[]; browser: ProvisionedBrowser; ev: (t: string, p?: Record<string, unknown>) => Promise<number>; handoffState?: StorageState; deadline?: number }) {
   const { db, runId, run, contract, candidates, browser, ev } = v;
   const env = replayEnvFor(db, runId, browser, contract, contract.target.origin, ev, v.handoffState);
   const seen = new Set<string>();
@@ -1244,6 +1256,13 @@ async function verifyCandidates(v: { db: Db; runId: string; generation: number; 
     await assertLease(db, runId, v.generation);
     const rule = contract.rules.find((r) => r.id === c.ruleId) ?? BASELINE_RULES.find((r) => r.id === c.ruleId);
     const fingerprint = `${c.ruleId}|${c.scenario.kind}|${hash.slice(0, 16)}`;
+    if (v.deadline && Date.now() > v.deadline) {
+      await db.query(`INSERT INTO findings (project_id, run_id, title, category, verification, impact, confidence, rule_id, rule_source, expected, observed, device, actor, limitations, fingerprint)
+        VALUES ($1,$2,$3,'needs_review','candidate',$4,'low',$5,$6,$7,$8,$9,$10,'Not verified: the run ran out of time before Oddhound could replay it.',$11)`,
+        [run.project_id, runId, c.title, c.impact, c.ruleId, rule?.source ?? 'agent hypothesis', rule?.text ?? 'No owner rule covers this behaviour.', c.observed, c.device, c.actor, fingerprint]);
+      await ev('finding.not_verified', { title: c.title, reason: 'time' });
+      continue;
+    }
     if (!rule) {
       await db.query(`INSERT INTO findings (project_id, run_id, title, category, verification, impact, confidence, rule_id, rule_source, expected, observed, device, actor, limitations, fingerprint)
         VALUES ($1,$2,$3,'needs_review','candidate',$4,'low',$5,'agent hypothesis','No owner rule covers this behaviour.',$6,$7,$8,'Not verified: no owner rule to judge against.',$9)`,
@@ -1320,7 +1339,7 @@ async function executeRetest(deps: ExecuteDeps, run: RunRow, contract: RunContra
   const { db } = deps;
   const findings = (await db.query<{ id: string; title: string; lifecycle: string | null; scenario_id: string; control_scenario_id: string | null }>(
     `SELECT id, title, lifecycle, scenario_id, control_scenario_id FROM findings WHERE run_id = $1 AND verification = 'verified' AND category = 'verified_issue'`, [run.parent_run_id])).rows;
-  const browser = await deps.runtime.provision({ runId: run.id, lab: deps.lab, onEgress: (d) => { if (!d.allowed) void ev('egress.denied', { host: d.host, reason: d.reason }); } });
+  const browser = await deps.runtime.provision({ runId: run.id, lab: deps.lab, onEgress: (d) => { if (!d.allowed) ev('egress.denied', { host: d.host, reason: d.reason }).catch(() => {}); } });
   setBrowser(browser);
   await setRunStatus(db, run.id, generation, 'running', { browserState: 'ready', browserRef: browser.ref, sandboxVerdict: browser.sandboxVerdict });
   await ev('browser.ready', { runtime: browser.runtime, ref: browser.ref, sandbox: browser.sandboxVerdict });
