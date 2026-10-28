@@ -45,3 +45,51 @@ describe('report grounding', () => {
     expect(scenarioProblems(g, rec).join(' ')).toMatch(/control_values/);
   });
 });
+
+describe('record setup for replays', () => {
+  it('replaces the run\'s record number with a record the replay creates itself', async () => {
+    const { withRecordSetup } = await import('../../packages/core/agent/execute-run.ts');
+    const rec = recorded();
+    rec.createdBy = new Map([['4', { path: '/bookings/new', fields: { 'Guest name': 'Ana', 'Party size': '2' }, submit: 'Book table' }]]);
+    const r = withRecordSetup('/bookings/4/edit', [
+      { step: { op: 'fill' as const, field: 'Party size', value: '0' } },
+      { step: { op: 'click' as const, target: 'Save changes', role: 'button' as const }, expect: { outcome: 'rejected' as const, path: '/bookings/4/edit' } },
+      { step: { op: 'goto' as const, path: '/bookings/4' } },
+    ], rec);
+    expect(r.setup?.path).toBe('/bookings/new');
+    expect(r.start).toBe('/bookings/{id}/edit');
+    expect(r.steps[1]!.expect?.path).toBe('/bookings/:id/edit');
+    expect(r.steps[2]!.step).toEqual({ op: 'goto', path: '/bookings/{id}' });
+  });
+
+  it('leaves a scenario alone when the run did not create that record', async () => {
+    const { withRecordSetup } = await import('../../packages/core/agent/execute-run.ts');
+    const r = withRecordSetup('/bookings/7/edit', [{ step: { op: 'back' as const } }], recorded());
+    expect(r.setup).toBeUndefined();
+    expect(r.start).toBe('/bookings/7/edit');
+  });
+});
+
+describe('recordIdsInUrl', () => {
+  it('reads numbers from the path, then from query values', async () => {
+    const { recordIdsInUrl } = await import('../../packages/core/verifier/scenario.ts');
+    expect(recordIdsInUrl('https://x.test/bookings?created=4')).toEqual(['4']);
+    expect(recordIdsInUrl('https://x.test/bookings/12/edit')).toEqual(['12']);
+    expect(recordIdsInUrl('https://x.test/bookings/new')).toEqual([]);
+  });
+});
+
+describe('exports for a scenario with a setup record', () => {
+  it('creates the record, keeps its number and opens the {id} path', async () => {
+    const { playwrightTest } = await import('../../packages/core/reports/playwright-export.ts');
+    const code = playwrightTest({
+      kind: 'batch', device: 'desktop', start: '/bookings/{id}/edit',
+      setup: { path: '/bookings/new', fields: { 'Guest name': 'Ana', 'Party size': '2' }, submit: 'Book table' },
+      steps: [{ step: { op: 'fill', field: 'Party size', value: '0' } }, { step: { op: 'click', target: 'Save changes', role: 'button' }, expect: { outcome: 'rejected' } }],
+      oracleStep: 2,
+    }, { title: 'Edit accepts 0', scenarioId: 's1', assertionHash: 'h' });
+    expect(code).toContain('await submitForm(page, "/bookings/new"');
+    expect(code).toContain(String.raw`/^\d+$/.test(v)`);
+    expect(code).toContain('new URL(fill("/bookings/{id}/edit", vars), BASE_URL)');
+  });
+});

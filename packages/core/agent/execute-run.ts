@@ -28,8 +28,9 @@ import { priceFor, inputTokenBound, reservationMicros, actualMicros } from '../p
 import { RunSession, SiteUnreachable } from './session.ts';
 import { ToolArgs, BROWSER_TOOLS, boundaryValues, agentModeFromEnv, toolDefinitionsFor, toolOffered, type AgentMode, type BatchStep, type Charter, type ToolName } from './tools.ts';
 import { systemPrompt } from './prompt.ts';
+import { findByLabel } from './by-label.ts';
 import { runHandoff, HandoffEnded } from './handoff.ts';
-import { CLICK_ROLES, controlFor, newReplaySessions, replayScenario, scenarioDefect, scenarioHash, type AuthRecipe, type Oracle, type ReplayEnv, type Scenario, type TraceStep } from '../verifier/scenario.ts';
+import { CLICK_ROLES, controlFor, newReplaySessions, recordIdsInUrl, replayScenario, scenarioDefect, scenarioHash, type Setup, type AuthRecipe, type Oracle, type ReplayEnv, type Scenario, type TraceStep } from '../verifier/scenario.ts';
 
 export type ExecuteDeps = {
   db: Db;
@@ -184,7 +185,7 @@ export async function executeRun(deps: ExecuteDeps, runId: string): Promise<RunS
 
     // 4. Exploration with the Meta model.
     const candidates: Candidate[] = [];
-    const recorded: Recorded = { auth: handoffState ? { kind: 'handoff' } : null, labelsByPath: new Map(), controlsByPath: new Map(), submitByPath: new Map(), acceptedByPath: new Map() };
+    const recorded: Recorded = { auth: handoffState ? { kind: 'handoff' } : null, labelsByPath: new Map(), controlsByPath: new Map(), submitByPath: new Map(), acceptedByPath: new Map(), createdBy: new Map() };
     const loop = await agentLoop({ deps, runId, generation, contract, run, provider, price, session, ev, abort, candidates, recorded });
     if (loop.stopReason) stopReason = loop.stopReason;
 
@@ -257,6 +258,8 @@ export type Recorded = {
   submitByPath?: Map<string, string>;
   /** Field values a form on each path accepted: the page moved on with no error message after submit. */
   acceptedByPath?: Map<string, Map<string, Set<string>>>;
+  /** Record number -> the form submit that created it (the number was in the URL the form landed on). */
+  createdBy?: Map<string, Setup>;
 };
 
 async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: string }> {
@@ -324,6 +327,10 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
       const acc = recorded.acceptedByPath?.get(path) ?? new Map<string, Set<string>>();
       for (const [k, v] of values) { const s = acc.get(k) ?? new Set<string>(); s.add(v); acc.set(k, s); }
       recorded.acceptedByPath?.set(path, acc);
+      // Only a form on a record-free path (e.g. /bookings/new) creates records; saving /bookings/4/edit does not.
+      if (!/\/\d{1,12}(\/|$)/.test(path)) {
+        for (const id of recordIdsInUrl(o.url)) if (!recorded.createdBy?.has(id)) recorded.createdBy?.set(id, { path, fields: Object.fromEntries(values), submit: label });
+      }
       typed.delete(path);
     }
   };
@@ -587,15 +594,25 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
         let rebased = false;
         // Refs come from the observation the model planned from. After the page changes, the same
         // control is found again only when exactly one element has the same kind, label, name and type.
-        const resolveRef = async (r: string): Promise<string | { error: string }> => {
+        const resolveRef = async (r: string, tool: string): Promise<string | { error: string }> => {
           const want = modelObs.elements.find((e) => e.ref === r);
-          if (!want) return { error: `${r} is not in the observation this batch was planned from` };
+          if (!want) return { error: `${r} is not in the observation this batch was planned from; name controls on later pages by label` };
           if (!rebased && await session.hasRef(r)) return r;
           const cur = await session.observe();
           const same = cur.elements.filter((e) => e.kind === want.kind && e.label === want.label && (e.name ?? '') === (want.name ?? '') && (e.type ?? '') === (want.type ?? ''));
-          if (same.length !== 1) return { error: `${want.kind} "${want.label}" is ${same.length ? 'ambiguous' : 'no longer on the page'} after the page changed` };
+          if (same.length === 1) { session.beginTurn(); rebased = true; return same[0]!.ref; }
+          // The page re-rendered the control differently (another kind, name or type): fall back to its label.
+          const byText = want.label ? findByLabel(cur.elements, tool, want.label) : { error: '' };
+          if ('ref' in byText) { session.beginTurn(); rebased = true; return byText.ref; }
+          return { error: `${want.kind} "${want.label}" is ${same.length ? 'ambiguous' : 'no longer on the page'} after the page changed` };
+        };
+        // A control named by its label is found on the page as it is now, so it works after any navigation.
+        const resolveLabel = async (label: string, tool: string): Promise<string | { error: string }> => {
+          const cur = await session.observe();
+          const hit = findByLabel(cur.elements, tool, label);
+          if ('error' in hit) return hit;
           session.beginTurn(); rebased = true;
-          return same[0]!.ref;
+          return hit.ref;
         };
         const lines: string[] = [];
         let surprise: string | null = null;
@@ -606,11 +623,16 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
               surprise = 'budget threshold reached'; lines.push(`step ${i + 1}: not run (${surprise})`); break;
             }
             const { tool, expect, ...rest } = st as BatchStep & Record<string, any>;
-            const callArgs: Record<string, unknown> = { ...rest };
+            const { label: byLabelText, ...restNoLabel } = rest as Record<string, any>;
+            const callArgs: Record<string, unknown> = { ...restNoLabel };
             let refError: string | null = null;
+            if (['click', 'fill', 'fill_credential', 'select_option'].includes(tool) && typeof rest.ref !== 'string') {
+              if (typeof byLabelText !== 'string') refError = 'give a ref or a label';
+              else { const r = await resolveLabel(byLabelText, tool); if (typeof r !== 'string') refError = r.error; else callArgs.ref = r; }
+            }
             for (const k of ['ref', 'target'] as const) {
-              if (typeof rest[k] !== 'string') continue;
-              const r = await resolveRef(rest[k]);
+              if (refError || typeof rest[k] !== 'string') continue;
+              const r = await resolveRef(rest[k], k === 'target' ? 'click' : tool);
               if (typeof r !== 'string') { refError = r.error; break; }
               callArgs[k] = r;
             }
@@ -675,7 +697,8 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
           if (steps.length > 1 && first.op === 'goto' && !steps[0]!.expect) { start = first.path; steps = steps.slice(1); oracleStep--; }
           const usesPassword = steps.some((x) => x.step.op === 'fill' && x.step.value === '{password}');
           const auth = recorded.auth && !usesPassword ? recorded.auth : undefined;
-          const scenario: Scenario = { kind: 'batch', device: logs[0]!.device, ...(auth ? { auth } : {}), start, steps, oracleStep };
+          const rp = withRecordSetup(start, steps, recorded);
+          const scenario: Scenario = { kind: 'batch', device: logs[0]!.device, ...(auth ? { auth } : {}), ...(rp.setup ? { setup: rp.setup } : {}), start: rp.start, steps: rp.steps, oracleStep };
           const stated = [...new Set(rec.steps.slice(0, k).map((x) => x.stated).filter(Boolean))].join(', ') || undefined;
           const knownRule = contract.rules.some((r) => r.id === args.rule_id) || BASELINE_RULES.some((r) => r.id === args.rule_id);
           candidates.push({ title: args.title, ruleId: args.rule_id, impact: args.impact, observed: args.observed, scenario, actor: logs[0]!.actor, device: logs[0]!.device, source: 'agent', ...(stated ? { stated } : {}) });
@@ -689,7 +712,8 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
           const t = traceFor(args.scenario.to_seq, args.scenario.from_seq);
           if (typeof t === 'string') return { text: `Candidate NOT recorded: ${t}` };
           const auth = recorded.auth && !t.usesPassword ? recorded.auth : undefined;
-          const scenario: Scenario = { kind: 'trace', device: t.device, ...(auth ? { auth } : {}), start: t.start, steps: t.steps, oracle: args.scenario.oracle };
+          const rp = withRecordSetup(t.start, t.steps.map((step) => ({ step })), recorded);
+          const scenario: Scenario = { kind: 'trace', device: t.device, ...(auth ? { auth } : {}), ...(rp.setup ? { setup: rp.setup } : {}), start: rp.start, steps: rp.steps.map((x) => x.step), oracle: args.scenario.oracle };
           const knownRule = contract.rules.some((r) => r.id === args.rule_id) || BASELINE_RULES.some((r) => r.id === args.rule_id);
           candidates.push({ title: args.title, ruleId: args.rule_id, impact: args.impact, observed: args.observed, scenario, actor: t.actor, device: t.device, source: 'agent' });
           await ev('finding.candidate', { title: args.title, ruleId: args.rule_id, kind: 'trace', source: 'agent', steps: t.steps.length });
@@ -1005,6 +1029,25 @@ function closestLabel(key: string, observed: Set<string> | undefined): string {
 
 function groundFields(fields: Record<string, string>, observed: Set<string> | undefined): Record<string, string> {
   return Object.fromEntries(Object.entries(fields).map(([k, v]) => [closestLabel(k, observed), v]));
+}
+
+/** A scenario that starts on (or opens) a record this run created gets a setup that creates its own record,
+ *  and the record number in its paths becomes {id}; a fresh replay account cannot open the original. */
+export function withRecordSetup<T extends { step: TraceStep; expect?: { path?: string } }>(start: string, steps: T[], recorded: Recorded): { start: string; steps: T[]; setup?: Setup } {
+  const pathIds = (p: string) => p.split('?')[0]!.split('/').filter((x) => /^\d{1,12}$/.test(x));
+  const paths = [start, ...steps.flatMap((x) => (x.step.op === 'goto' ? [x.step.path] : []))];
+  const id = paths.flatMap(pathIds).find((x) => recorded.createdBy?.has(x));
+  if (!id) return { start, steps };
+  const swap = (p: string, to: string) => p.replace(new RegExp(`/${id}(?=/|\\?|$)`, 'g'), `/${to}`);
+  return {
+    setup: recorded.createdBy!.get(id)!,
+    start: swap(start, '{id}'),
+    steps: steps.map((x) => ({
+      ...x,
+      step: x.step.op === 'goto' ? { ...x.step, path: swap(x.step.path, '{id}') } : x.step,
+      ...(x.expect?.path ? { expect: { ...x.expect, path: swap(x.expect.path, ':id') } } : {}),
+    })),
+  };
 }
 
 export function groundCandidate(c: Candidate, recorded: Recorded): Candidate {

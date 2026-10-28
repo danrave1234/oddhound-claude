@@ -33,8 +33,12 @@ const StepSchema = z.discriminatedUnion('tool', [
 
 /** One step of a scenario batch: a browser operation plus an optional expectation judged by Oddhound. */
 const withExpect = <T extends z.ZodRawShape>(o: z.ZodObject<T>) => o.extend({ expect: ExpectSchema.optional() });
+/** In a batch, a control on a page the model has not seen yet is named by its visible label instead of a ref;
+ *  Oddhound finds it on the page when the step runs (exactly one match, or the batch stops). */
+const byLabel = <T extends z.ZodRawShape & { ref: typeof ref }>(o: z.ZodObject<T>) =>
+  withExpect(o).extend({ ref: ref.optional(), label: z.string().min(1).max(120).optional() });
 export const BatchStepSchema = z.discriminatedUnion('tool', [
-  withExpect(stepShapes.click), withExpect(stepShapes.fill), withExpect(stepShapes.fill_credential), withExpect(stepShapes.select_option),
+  byLabel(stepShapes.click), byLabel(stepShapes.fill), byLabel(stepShapes.fill_credential), byLabel(stepShapes.select_option),
   withExpect(stepShapes.press_key), withExpect(stepShapes.navigate), withExpect(stepShapes.go_back), withExpect(stepShapes.scroll), withExpect(stepShapes.drag),
 ]);
 export type BatchStep = z.infer<typeof BatchStepSchema>;
@@ -133,6 +137,7 @@ export function toolOffered(mode: AgentMode, name: string): boolean { return !HI
 
 const s = (properties: Record<string, unknown>, required: string[] = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const refProp = { type: 'string', description: 'Element reference from the latest observation, e.g. "e7".' };
+const labelProp = { type: 'string', description: 'Instead of ref: the control\'s visible label or button text, exactly as shown. Use it for any control on a page a previous step opens.' };
 const keyProp = { type: 'string', enum: [...KEYS] };
 const expectProp = {
   type: 'object',
@@ -222,14 +227,14 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     type: 'function', function: {
       name: 'run_scenario_batch',
-      description: 'Plan and run a scenario of 5-15 browser steps toward one goal in ONE call, each step with an expectation where you have one. Oddhound runs the steps at 1 action/s with the usual checks and comes back early only on a surprise: a failed or undecidable expectation, an element that is gone after the page changed, a new page reached by a step without an expectation, a detected error, a dialog, or a policy block. Refs come from the latest observation; after the page changes Oddhound finds the same control again only by its exact kind and label. You get one observation at the end.',
+      description: 'Plan and run a scenario of 5-15 browser steps toward one goal in ONE call, each step with an expectation where you have one. Oddhound runs the steps at 1 action/s with the usual checks and comes back early only on a surprise: a failed or undecidable expectation, an element that is gone after the page changed, a new page reached by a step without an expectation, a detected error, a dialog, or a policy block. Target a control with ref (from the latest observation) on the current page, or with label (its visible text, exactly as shown, e.g. "Party size" or "Book table") on any page a step reaches later: refs from older observations do not work after the page changes, labels do. You get one observation at the end.',
       parameters: s({
         goal: { type: 'string', description: 'What this batch tests, e.g. "party size 0 and 9 are rejected; 8 is accepted"' },
         steps: { type: 'array', maxItems: 15, items: { oneOf: [
-          s({ tool: { const: 'click' }, ref: refProp, expect: expectProp }, ['tool', 'ref']),
-          s({ tool: { const: 'fill' }, ref: refProp, value: fillValueProp, expect: expectProp }, ['tool', 'ref', 'value']),
-          s({ tool: { const: 'fill_credential' }, ref: refProp, credential_ref: { type: 'string' }, field: { type: 'string', enum: ['username', 'password'] }, expect: expectProp }, ['tool', 'ref', 'credential_ref', 'field']),
-          s({ tool: { const: 'select_option' }, ref: refProp, value: { type: 'string' }, expect: expectProp }, ['tool', 'ref', 'value']),
+          s({ tool: { const: 'click' }, ref: refProp, label: labelProp, expect: expectProp }, ['tool']),
+          s({ tool: { const: 'fill' }, ref: refProp, label: labelProp, value: fillValueProp, expect: expectProp }, ['tool', 'value']),
+          s({ tool: { const: 'fill_credential' }, ref: refProp, label: labelProp, credential_ref: { type: 'string' }, field: { type: 'string', enum: ['username', 'password'] }, expect: expectProp }, ['tool', 'credential_ref', 'field']),
+          s({ tool: { const: 'select_option' }, ref: refProp, label: labelProp, value: { type: 'string' }, expect: expectProp }, ['tool', 'value']),
           s({ tool: { const: 'press_key' }, key: keyProp, expect: expectProp }, ['tool', 'key']),
           s({ tool: { const: 'navigate' }, path: { type: 'string' }, expect: expectProp }, ['tool', 'path']),
           s({ tool: { const: 'go_back' }, expect: expectProp }, ['tool']),

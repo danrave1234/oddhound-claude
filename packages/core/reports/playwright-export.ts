@@ -11,7 +11,7 @@ type Batch = Extract<Scenario, { kind: 'batch' }>;
 type Step = Trace['steps'][number];
 
 function stepLine(st: Step): string {
-  if (st.op === 'goto') return `  await page.goto(new URL(${j(st.path)}, BASE_URL).toString());`;
+  if (st.op === 'goto') return `  await page.goto(new URL(fill(${j(st.path)}, vars), BASE_URL).toString());`;
   if (st.op === 'back') return '  await page.goBack();';
   if (st.op === 'press') return `  await page.keyboard.press(${j(st.key === 'Space' ? ' ' : st.key)});`;
   if (st.op === 'fill') return `  await (await field(page, ${j(st.field)})).fill(fill(${j(st.value)}, vars));`;
@@ -20,12 +20,24 @@ function stepLine(st: Step): string {
   return `  await ${st.role === 'other' ? `page.getByText(${j(st.target)})` : `page.getByRole(${j(st.role)}, { name: ${j(st.target)} })`}.first().click();`;
 }
 
+/** Create the record the test needs and keep its number (from the URL the form lands on) as {id}. */
+function setupLines(s: Trace | Batch): string[] {
+  if (!s.setup) return [];
+  return [
+    '  // Create the record this test works on; {id} below is its number.',
+    `  await submitForm(page, ${j(s.setup.path)}, ${j(s.setup.fields)}, ${j(s.setup.submit)}, vars);`,
+    "  { const u = new URL(page.url()); vars.id = [...u.pathname.split('/'), ...u.searchParams.values()].find((v) => /^\\d+$/.test(v)) ?? ''; }",
+    "  expect(vars.id, 'the form should land on a URL with the new record number').not.toBe('');",
+  ];
+}
+
 /** Batch steps with their expectations as Playwright assertions. Values embedded with JSON.stringify only. */
 function batchBody(s: Batch, signedIn: boolean): string {
   const lines: string[] = [];
   if (s.device === 'mobile') lines.push('  await page.setViewportSize({ width: 390, height: 844 });');
-  lines.push(`  const vars = ${signedIn ? '{ ...who, marker }' : '{ ...identity(), marker }'};`);
-  lines.push(`  await page.goto(new URL(${j(s.start)}, BASE_URL).toString());`);
+  lines.push(`  const vars: Record<string, string> = ${signedIn ? '{ ...who, marker }' : '{ ...identity(), marker }'};`);
+  lines.push(...setupLines(s));
+  lines.push(`  await page.goto(new URL(fill(${j(s.start)}, vars), BASE_URL).toString());`);
   lines.push("  const rejection = page.locator('[role=alert], .error, .invalid-feedback, :user-invalid');");
   s.steps.slice(0, s.oracleStep).forEach((x, i) => {
     lines.push(`  // Step ${i + 1}${x.expect ? (i + 1 === s.oracleStep ? ' (rule check)' : ' (precondition)') : ''}`);
@@ -51,8 +63,9 @@ function traceBody(s: Trace, signedIn: boolean): string {
   lines.push('  const failures: string[] = [];');
   lines.push("  page.on('pageerror', (e) => failures.push('pageerror: ' + e.message));");
   lines.push("  page.on('response', (r) => failures.push('status ' + r.status() + ' ' + r.request().method() + ' ' + new URL(r.url()).pathname));");
-  lines.push(`  const vars = ${vars};`);
-  lines.push(`  await page.goto(new URL(${j(s.start)}, BASE_URL).toString());`);
+  lines.push(`  const vars: Record<string, string> = ${vars};`);
+  lines.push(...setupLines(s));
+  lines.push(`  await page.goto(new URL(fill(${j(s.start)}, vars), BASE_URL).toString());`);
   for (const st of s.steps) lines.push(stepLine(st));
   lines.push("  await page.waitForLoadState('networkidle').catch(() => {});");
   const o = s.oracle;

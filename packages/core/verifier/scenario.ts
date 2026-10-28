@@ -30,6 +30,12 @@ export type FormAuthRecipe = z.infer<typeof FormAuthRecipeSchema>;
 
 const FormSchema = z.object({ path: z.string().startsWith('/').max(200), fields: FieldMap, submit: z.string().min(1).max(80) });
 
+/** A record a scenario needs first, created through the same form the run used. Its number, read from the
+ *  URL the form lands on, replaces {id} in the scenario's paths, so the replay never opens the original
+ *  run's record (which a fresh account cannot see). */
+const SetupSchema = z.object({ path: z.string().startsWith('/').max(200), fields: z.record(z.string().max(80), z.string().max(500)), submit: z.string().min(1).max(80) });
+export type Setup = z.infer<typeof SetupSchema>;
+
 export const ScenarioSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('form_rule'),
@@ -66,6 +72,7 @@ export const ScenarioSchema = z.discriminatedUnion('kind', [
     kind: z.literal('trace'),
     device: z.enum(['desktop', 'mobile']),
     auth: AuthRecipeSchema.optional(),
+    setup: SetupSchema.optional(),
     start: z.string().startsWith('/').max(300),
     steps: z.array(z.lazy(() => TraceStepSchema)).max(14),
     oracle: z.lazy(() => OracleSchema),
@@ -77,6 +84,7 @@ export const ScenarioSchema = z.discriminatedUnion('kind', [
     kind: z.literal('batch'),
     device: z.enum(['desktop', 'mobile']),
     auth: AuthRecipeSchema.optional(),
+    setup: SetupSchema.optional(),
     start: z.string().startsWith('/').max(300),
     steps: z.array(z.object({ step: z.lazy(() => TraceStepSchema), expect: ExpectSchema.optional() })).min(1).max(15),
     oracleStep: z.number().int().min(1).max(15),
@@ -333,9 +341,32 @@ export async function replayScenario(s: Scenario, env: ReplayEnv): Promise<Repla
 
 type TraceScenario = Extract<Scenario, { kind: 'trace' }>;
 
+/** Create the record a scenario needs and return its number from the URL the form lands on. */
+async function runSetup(page: Page, origin: string, setup: Setup, vars: Record<string, string>): Promise<string> {
+  await page.goto(new URL(setup.path, origin).toString(), { waitUntil: 'domcontentloaded' });
+  try {
+    for (const [field, value] of Object.entries(setup.fields)) await (await fieldLocator(page, field)).fill(expand(value, vars), { timeout: 5_000 });
+    await (await targetLocator(page, setup.submit, 'button')).click({ timeout: 5_000 });
+    await page.waitForLoadState('domcontentloaded').catch(() => {});
+  } catch (e) {
+    throw new ReplayBlocked(`setup (create the record at ${setup.path}) failed: ${(e as Error).message.split('\n')[0]!.slice(0, 160)}`);
+  }
+  const id = recordIdsInUrl(page.url())[0];
+  if (!id) throw new ReplayBlocked(`setup at ${setup.path} did not show which record it created (no number in ${new URL(page.url()).pathname})`);
+  return id;
+}
+
+/** Record numbers a URL carries: numeric path segments, then numeric query values (e.g. ?created=4). */
+export function recordIdsInUrl(url: string): string[] {
+  const u = new URL(url);
+  const fromPath = u.pathname.split('/').filter((p) => /^\d{1,12}$/.test(p));
+  const fromQuery = [...u.searchParams.values()].filter((v) => /^\d{1,12}$/.test(v));
+  return [...fromPath, ...fromQuery];
+}
+
 async function runStep(page: Page, origin: string, step: TraceStep, vars: Record<string, string>): Promise<void> {
   switch (step.op) {
-    case 'goto': await page.goto(new URL(step.path, origin).toString(), { waitUntil: 'domcontentloaded' }); return;
+    case 'goto': await page.goto(new URL(expand(step.path, vars), origin).toString(), { waitUntil: 'domcontentloaded' }); return;
     case 'back': await page.goBack({ waitUntil: 'domcontentloaded' }); return;
     case 'press': await page.keyboard.press(step.key === 'Space' ? ' ' : step.key); return;
     case 'fill': await (await fieldLocator(page, step.field)).fill(expand(step.value, vars), { timeout: 5_000 }); return;
@@ -380,8 +411,9 @@ async function replayTrace(
   const inScope = env.inScope ?? ((o: string) => o === new URL(env.origin).origin);
   const signals: Signal[] = [];
   attachSentinels(page, inScope, (sig) => signals.push(sig));
-  await page.goto(new URL(s.start, env.origin).toString(), { waitUntil: 'domcontentloaded' });
-  const vars = { ...env.identity(), marker };
+  const vars: Record<string, string> = { ...env.identity(), marker };
+  if (s.setup) vars.id = await runSetup(page, env.origin, s.setup, vars);
+  await page.goto(new URL(expand(s.start, vars), env.origin).toString(), { waitUntil: 'domcontentloaded' });
   for (const [i, step] of s.steps.entries()) {
     try { await runStep(page, env.origin, step, vars); }
     catch (e) {
@@ -431,8 +463,9 @@ async function replayBatch(
 ): Promise<ReplayResult> {
   const marker = `OH${randomBytes(4).toString('hex').toUpperCase()}`;
   const page = await open(s.device, s.auth ? 'A' : undefined, s.auth);
-  await page.goto(new URL(s.start, env.origin).toString(), { waitUntil: 'domcontentloaded' });
-  const vars = { ...env.identity(), marker };
+  const vars: Record<string, string> = { ...env.identity(), marker };
+  if (s.setup) vars.id = await runSetup(page, env.origin, s.setup, vars);
+  await page.goto(new URL(expand(s.start, vars), env.origin).toString(), { waitUntil: 'domcontentloaded' });
   const last = Math.min(s.oracleStep, s.steps.length);
   const checks: { step: number; ok: boolean; detail: string }[] = [];
   for (let i = 0; i < last; i++) {

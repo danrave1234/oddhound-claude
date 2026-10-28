@@ -18,6 +18,12 @@ export type BriefInput = {
   docs?: { library: string; excerpt: string } | null;
 };
 
+/** The record a scenario creates first; {id} in later paths is its number. */
+function setupText(setup: { path: string; fields: Record<string, string>; submit: string }): string {
+  const fields = Object.entries(setup.fields).map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join(', ');
+  return `Create a record at \`${setup.path}\` (${fields}) and press "${setup.submit}". Below, {id} is that record's number.`;
+}
+
 /** Neutralise anything that could act as an instruction or break out of the fenced block. */
 export function fenceUntrusted(text: string): string {
   return text.replace(/```/g, "'''").replace(/<\/?(system|assistant|user|instructions?)>/gi, '[tag removed]').slice(0, 2000);
@@ -39,12 +45,14 @@ function reproduction(s: Scenario): string[] {
   } else if (s.kind === 'mobile_reachability') {
     steps.push(`On a 390x844 phone screen, open \`${s.path}\` and try to press "${s.control}" at every scroll position.`);
   } else if (s.kind === 'batch') {
+    if (s.setup) steps.push(setupText(s.setup));
     steps.push(`Open \`${s.start}\` on a ${s.device === 'mobile' ? '390x844 phone' : 'desktop'} screen.`);
     s.steps.slice(0, s.oracleStep).forEach((x, i) => {
       const check = x.expect ? ` ${i + 1 === s.oracleStep ? 'Rule check' : 'Precondition'}: ${expectationText(x.expect)}.` : '';
       steps.push(`${traceStepText(x.step)}${check}`);
     });
   } else {
+    if (s.setup) steps.push(setupText(s.setup));
     steps.push(`Open \`${s.start}\` on a ${s.device === 'mobile' ? '390x844 phone' : 'desktop'} screen.`);
     for (const st of s.steps) steps.push(traceStepText(st));
     steps.push(`Check: ${oracleText(s.oracle)}.`);
