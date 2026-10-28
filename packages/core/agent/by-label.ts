@@ -33,3 +33,8 @@ export function findByLabel(elements: ObservedElement[], tool: string, label: st
   const seen = [...new Set(usable.map((e) => e.label).filter(Boolean))].slice(0, 12).map((l) => JSON.stringify(l)).join(', ');
   return { error: `no control labelled "${label}" on this page${seen ? ` (labels here: ${seen})` : ''}` };
 }
+
+/** True when a batch step points at a control by ref (planned on the page the batch started from). */
+export function usesRef(step: Record<string, unknown>): boolean {
+  return typeof step.ref === 'string' || typeof step.target === 'string';
+}

@@ -8,6 +8,7 @@ This is an honest record of what was built, what was actually tested, and what i
 
 | Capability | Evidence |
 |---|---|
+| **Development model (from Oct 28, owner-approved)** | The deployed worker uses `muse-spark-1.3-contributor`: the same Muse Spark 1.3 at $0.10 / $0.002 cached / $0.20 per 1M tokens (vs $1.25 / $0.15 / $4.25), which Meta labels "Used to improve our products". Run prompts contain target-site page text (no credentials), so it is only for Oddhound's demo target and the owner's own sites. Set by `META_MODEL` in `infra/fly/oddhound-web.fly.toml`; **remove it before other owners' sites are scanned.** |
 | **Real Meta inference** (Direct Meta `muse-spark-1.3`) | Provider smoke suite passes 9/9 against the live API (`docs/PROVIDER_SMOKE_TESTS.json`): text, tool call, tool-result round-trip, two-turn continuation, screenshot in a user message, structured output via tool arguments, `tool_choice:"required"` rejected (HTTP 400, as documented), timeout handling. |
 | **Autonomous exploration with no click script** | Real Muse Spark runs against the demo target registered synthetic accounts, created/edited/cancelled bookings, tried boundary values, blank input, past dates, a second account and a 390×844 phone screen — see §3. |
 | **Independent verification** | Every candidate is replayed twice in fresh browser contexts with fresh synthetic accounts, plus a valid neighbouring case for rejected-input rules. Assertions are typed and evaluated by trusted code; the model never runs code. |

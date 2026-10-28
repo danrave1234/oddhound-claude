@@ -28,7 +28,7 @@ import { priceFor, inputTokenBound, reservationMicros, actualMicros } from '../p
 import { RunSession, SiteUnreachable } from './session.ts';
 import { ToolArgs, BROWSER_TOOLS, boundaryValues, agentModeFromEnv, toolDefinitionsFor, toolOffered, type AgentMode, type BatchStep, type Charter, type ToolName } from './tools.ts';
 import { systemPrompt } from './prompt.ts';
-import { findByLabel } from './by-label.ts';
+import { findByLabel, usesRef } from './by-label.ts';
 import { runHandoff, HandoffEnded } from './handoff.ts';
 import { CLICK_ROLES, controlFor, newReplaySessions, recordIdsInUrl, replayScenario, scenarioDefect, scenarioHash, type Setup, type AuthRecipe, type Oracle, type ReplayEnv, type Scenario, type TraceStep } from '../verifier/scenario.ts';
 
@@ -660,7 +660,9 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
               await ev('batch.expectation', { batch: no, step: i + 1, seq: info.seq, ok: v.ok, unclear: v.unclear, detail: v.detail.slice(0, 300) });
             } else if (!expect && info.newState && i < steps.length - 1) {
               line += ' | reached a page state not seen before';
-              surprise ??= 'new page state without an expectation';
+              // Refs were planned on the old page, so the model must look first; steps that name controls by
+              // label (or need no control) are found on the new page and the batch carries on.
+              if (usesRef(steps[i + 1]!)) surprise ??= 'new page state without an expectation';
             }
             lines.push(line);
             if (surprise) break;

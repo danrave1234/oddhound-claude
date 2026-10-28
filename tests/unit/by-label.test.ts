@@ -48,3 +48,13 @@ describe('batch step schema', () => {
     expect(BatchStepSchema.safeParse({ tool: 'click', ref: 'e6' }).success).toBe(true);
   });
 });
+
+describe('usesRef', () => {
+  it('only steps that point at a control by ref need the model to look at a new page first', async () => {
+    const { usesRef } = await import('../../packages/core/agent/by-label.ts');
+    expect(usesRef({ tool: 'fill', ref: 'e4', value: '0' })).toBe(true);
+    expect(usesRef({ tool: 'drag', ref: 'e1', target: 'e2' })).toBe(true);
+    expect(usesRef({ tool: 'fill', label: 'Party size', value: '0' })).toBe(false);
+    expect(usesRef({ tool: 'navigate', path: '/bookings' })).toBe(false);
+  });
+});

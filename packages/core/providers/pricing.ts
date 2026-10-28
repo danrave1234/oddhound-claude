@@ -8,6 +8,9 @@ export type Price = { inputPerM: number; cachedInputPerM: number; outputPerM: nu
 
 const PRICES: Record<string, Price> = {
   'meta-direct/muse-spark-1.3': { inputPerM: 1.25, cachedInputPerM: 0.15, outputPerM: 4.25, source: 'P14 dev.meta.ai/models/muse-spark (Oct 27, 2026)' },
+  // Same model; Meta labels this tier "Used to improve our products". Development only (owner-approved Oct 28,
+  // 2026): run prompts carry target-site page text, so it is not for other owners' sites without their consent.
+  'meta-direct/muse-spark-1.3-contributor': { inputPerM: 0.10, cachedInputPerM: 0.002, outputPerM: 0.20, source: 'dev.meta.ai/products/meta-model-api (read Oct 28, 2026)' },
   'baseten/meta-models/muse-spark-open-1026': { inputPerM: 1.25, cachedInputPerM: 0.15, outputPerM: 4.25, source: 'P4 baseten.co/library/muse-spark-open (Oct 27, 2026)' },
   'fireworks/accounts/fireworks/models/muse-spark-open': { inputPerM: 1.25, cachedInputPerM: 0.15, outputPerM: 4.25, source: 'P5 fireworks.ai/models/fireworks/muse-spark-open (Oct 27, 2026)' },
   // The offline test double costs nothing and never calls a provider.

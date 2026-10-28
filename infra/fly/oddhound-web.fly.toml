@@ -15,6 +15,9 @@ primary_region = "iad"
   ARTIFACT_STORE = "db"
   BETTER_AUTH_URL = "https://oddhound-claude-web.fly.dev"
   META_REASONING_EFFORT = "low"
+  # Development only: the same Muse Spark 1.3 at the "contributor" price (Meta may use the prompts to improve its
+  # products). Remove this line before other owners' sites are scanned.
+  META_MODEL = "muse-spark-1.3-contributor"
   DEMO_TARGET_ORIGIN = "https://oddhound-claude-demo.fly.dev"
   DEMO_TARGET_RESET_URL = "https://oddhound-claude-demo.fly.dev/__lab/reset"
   DEMO_TARGET_FIXED_ORIGIN = "https://oddhound-claude-demo-fixed.fly.dev"
