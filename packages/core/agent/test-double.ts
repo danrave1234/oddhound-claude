@@ -64,13 +64,16 @@ export class HeuristicTestPlanner implements ChatProvider {
   #successText = '';
   #bookingSubmit = '';
   #firstRecordPath = '';
+  #editLabels: { party: string; notes: string } = { party: '', notes: '' };
 
   async chat(req: ChatRequest): Promise<ChatResult> {
     // A new run starts with [system, "Begin..."]; a compacted conversation ([system, notebook]) is the same run.
     const first = req.messages[1];
     if (req.messages.length <= 2 && !(first?.role === 'user' && typeof first.content === 'string' && first.content.startsWith('NOTEBOOK'))) { this.#step = 0; this.#queue = []; }
     const call = this.#next(req.messages);
-    const toolCalls: ToolCall[] = call ? [{ id: `call_${randomUUID().slice(0, 8)}`, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } }] : [];
+    // A form's queued fills and its submit go out in the same turn (refs stay valid within a turn), as a model would send them.
+    const calls = call ? [call, ...this.#queue.splice(0)] : [];
+    const toolCalls: ToolCall[] = calls.map((c) => ({ id: `call_${randomUUID().slice(0, 8)}`, type: 'function', function: { name: c.name, arguments: JSON.stringify(c.args) } }));
     return {
       message: { role: 'assistant', content: null, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) },
       usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
@@ -154,6 +157,11 @@ export class HeuristicTestPlanner implements ChatProvider {
         const ok = this.#accepted(o!, 'Ada Tester');
         const link = o!.els.find((e) => e.kind === 'link' && /^#\d+/.test(e.label));
         if (link) this.#firstRecordPath = /href=(\S+)/.exec(link.attrs)?.[1] ?? '';
+        // Family 3: a list with a summary line is checked against its own table (numbers parsed by Oddhound).
+        const header = o!.text.match(/\b(Total \w+)\s*:/)?.[1];
+        const column = o!.els.length && /Party/.test(o!.text) ? 'Party' : undefined;
+        if (header && column) this.#queue.push({ name: 'check_invariant', args: { kind: 'sum', total_label: header, column, evidence: `The list shows a ${column} column and a "${header}" line`, rule_id: 'R7' } });
+        if (/\bBookings\s*:\s*\d/.test(o!.text)) this.#queue.push({ name: 'check_invariant', args: { kind: 'count', total_label: 'Bookings', evidence: 'The list shows a Bookings count next to its table' } });
         return { name: 'update_workflow', args: { name: 'Create booking', status: ok ? 'completed' : 'blocked', summary: ok ? 'A valid booking for 2 guests was accepted.' : 'A valid booking was not accepted.' } };
       }
       case 8: return { name: 'boundary_values', args: { kind: 'integer', min: 1, max: 8 } };
@@ -192,17 +200,45 @@ export class HeuristicTestPlanner implements ChatProvider {
       case 18: return this.#firstRecordPath ? { name: 'navigate', args: { path: this.#firstRecordPath } } : { name: 'observe', args: {} };
       case 19: { const edit = find(o!.els, 'link', /edit/i); return edit ? { name: 'click', args: { ref: edit.ref } } : { name: 'observe', args: {} }; }
       case 20: {
-        const party = find(o!.els, 'input', /party|size/i), save = find(o!.els, 'button', /save|update/i);
-        if (party && save) { this.#queue.push({ name: 'click', args: { ref: save.ref } }); return { name: 'fill', args: { ref: party.ref, value: '3' } }; }
+        const party = find(o!.els, 'input', /party|size/i), notes = find(o!.els, ['textarea', 'input'], /note|comment|request/i), save = find(o!.els, 'button', /save|update/i);
+        if (party && save) {
+          this.#editLabels = { party: party.label, notes: notes?.label ?? '' };
+          if (notes) this.#queue.push({ name: 'fill', args: { ref: notes.ref, value: 'Edited note from the test double' } });
+          this.#queue.push({ name: 'click', args: { ref: save.ref } });
+          return { name: 'fill', args: { ref: party.ref, value: '3' } };
+        }
         return { name: 'observe', args: {} };
       }
-      case 21: { const cancel = find(o!.els, 'button', /cancel/i); return cancel ? { name: 'click', args: { ref: cancel.ref } } : { name: 'observe', args: {} }; }
-      case 22: return { name: 'update_workflow', args: { name: 'Edit and cancel booking', status: /cancelled/i.test(o!.text) ? 'completed' : 'blocked', summary: /cancelled/i.test(o!.text) ? 'Edited the party size and cancelled the booking.' : 'Could not confirm cancellation.' } };
+      // Family 1: the page's own success message after the edit, checked against a reload and the edit form.
+      case 21: {
+        const claim = /^"((?:[^"\\]|\\.)*)"/.exec(o!.messages[0] ?? '')?.[1];
+        const fields = [this.#editLabels.party, this.#editLabels.notes].filter(Boolean);
+        return fields.length ? { name: 'check_claim', args: { ...(claim ? { claim } : {}), fields, revisit_path: `${this.#firstRecordPath}/edit` } } : { name: 'observe', args: {} };
+      }
+      // Family 2, two tabs: two different fields of the same booking from two tabs.
+      case 22: return this.#firstRecordPath && this.#labels.guest
+        ? { name: 'check_two_tabs', args: { path: `${this.#firstRecordPath}/edit`, first: { field: this.#labels.guest, value: 'Ada Tester Two Tabs' }, second: { field: this.#labels.party!, value: '4' }, rule_id: 'R6' } }
+        : { name: 'observe', args: {} };
+      case 23: {
+        if (!this.#firstRecordPath) return { name: 'observe', args: {} };
+        // Family 5: the record's page on desktop vs. a phone, then only its Cancel button (the control).
+        this.#queue.push(
+          { name: 'check_differential', args: { path: this.#firstRecordPath, rule_id: 'R8' } },
+          { name: 'check_differential', args: { path: this.#firstRecordPath, controls: ['Cancel booking'] } },
+        );
+        return { name: 'navigate', args: { path: this.#firstRecordPath } };
+      }
+      case 24: { const cancel = find(o!.els, 'button', /cancel/i); return cancel ? { name: 'click', args: { ref: cancel.ref } } : { name: 'observe', args: {} }; }
+      case 25: return { name: 'update_workflow', args: { name: 'Edit and cancel booking', status: /cancelled/i.test(o!.text) ? 'completed' : 'blocked', summary: /cancelled/i.test(o!.text) ? 'Edited the party size and cancelled the booking.' : 'Could not confirm cancellation.' } };
+      // Family 2, cross-actor: Oddhound signs up actor B itself and opens exactly actor A's record; the
+      // edit page is the neighbouring control.
+      case 26: return this.#firstRecordPath ? { name: 'check_cross_actor', args: { path: this.#firstRecordPath, try_controls: ['Cancel booking'] } } : { name: 'observe', args: {} };
+      case 27: return this.#firstRecordPath ? { name: 'check_cross_actor', args: { path: `${this.#firstRecordPath}/edit` } } : { name: 'observe', args: {} };
       // Two-account check on a known record: actor B tries to open actor A's own booking.
-      case 23: return { name: 'use_actor', args: { actor: 'B' } };
-      case 24: return { name: 'navigate', args: { path: this.#registerPath } };
-      case 25: return { name: 'create_identity', args: {} };
-      case 26: {
+      case 28: return { name: 'use_actor', args: { actor: 'B' } };
+      case 29: return { name: 'navigate', args: { path: this.#registerPath } };
+      case 30: return { name: 'create_identity', args: {} };
+      case 31: {
         const ident = lastToolJson(messages, 'credential_ref');
         const name = find(o!.els, 'input', /name/i), email = find(o!.els, 'input', /e-?mail/i), pass = find(o!.els, 'input', /password/i), submit = find(o!.els, 'button', /create|sign up|register/i);
         if (!ident || !name || !email || !pass || !submit) return { name: 'observe', args: {} };
@@ -213,8 +249,8 @@ export class HeuristicTestPlanner implements ChatProvider {
         );
         return { name: 'fill', args: { ref: name.ref, value: ident.name } };
       }
-      case 27: return this.#firstRecordPath ? { name: 'navigate', args: { path: this.#firstRecordPath } } : { name: 'observe', args: {} };
-      case 28: {
+      case 32: return this.#firstRecordPath ? { name: 'navigate', args: { path: this.#firstRecordPath } } : { name: 'observe', args: {} };
+      case 33: {
         const sawRecord = /Ada Tester/.test(o!.text);
         if (sawRecord) {
           return { name: 'report_candidate', args: {
@@ -225,11 +261,11 @@ export class HeuristicTestPlanner implements ChatProvider {
         }
         return { name: 'observe', args: {} };
       }
-      case 29: return { name: 'use_actor', args: { actor: 'A' } };
-      case 30: return { name: 'set_device', args: { device: 'mobile' } };
-      case 31: return { name: 'navigate', args: { path: this.#formPath } };
-      case 32: return { name: 'scroll', args: { to: 'bottom' } };
-      case 33: {
+      case 34: return { name: 'use_actor', args: { actor: 'A' } };
+      case 35: return { name: 'set_device', args: { device: 'mobile' } };
+      case 36: return { name: 'navigate', args: { path: this.#formPath } };
+      case 37: return { name: 'scroll', args: { to: 'bottom' } };
+      case 38: {
         const submit = find(o!.els, 'button', /book|reserve|submit/i);
         if (submit && /COVERED_BY|offscreen/.test(submit.attrs)) {
           return { name: 'report_candidate', args: {
@@ -240,8 +276,21 @@ export class HeuristicTestPlanner implements ChatProvider {
         }
         return { name: 'observe', args: {} };
       }
-      case 34: return { name: 'update_workflow', args: { name: 'Mobile booking form', status: 'completed', summary: 'Checked the booking form at 390x844.' } };
-      case 35: return { name: 'set_device', args: { device: 'desktop' } };
+      case 39: return { name: 'update_workflow', args: { name: 'Mobile booking form', status: 'completed', summary: 'Checked the booking form at 390x844.' } };
+      case 40: return { name: 'set_device', args: { device: 'desktop' } };
+      // Family 4: fill the booking form without submitting; Oddhound presses Book table twice and counts.
+      case 41: return { name: 'navigate', args: { path: this.#formPath } };
+      case 42: {
+        const guest = find(o!.els, 'input', /guest|name/i), party = find(o!.els, 'input', /party|guests|size|people/i), day = find(o!.els, 'input', /date|day/i);
+        const submit = find(o!.els, 'button', /book|reserve|save|submit/i);
+        if (!guest || !party || !day || !submit) return { name: 'observe', args: {} };
+        this.#queue.push(
+          { name: 'fill', args: { ref: party.ref, value: '2' } },
+          { name: 'fill', args: { ref: day.ref, value: date(9) } },
+          { name: 'check_interruption', args: { kind: 'double_submit', submit: submit.label, field: guest.label, list_path: this.#listPath, rule_id: 'R9' } },
+        );
+        return { name: 'fill', args: { ref: guest.ref, value: 'Double Press Guest K4' } };
+      }
       default:
         return { name: 'finish_run', args: { summary: 'Registered, booked, edited and cancelled; tried boundary values, blank input, a past date, a second account and a phone-sized screen.' } };
     }

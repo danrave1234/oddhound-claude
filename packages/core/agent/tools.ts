@@ -113,6 +113,28 @@ export const ToolArgs = {
     try_controls: z.array(z.string().min(1).max(80)).max(2).optional(),
   }),
   // Family 2, two tabs: an edit form of a record this actor created; two different fields, two new values.
+  // Family 3: an invariant of the current page; Oddhound parses the numbers and re-checks it after later steps.
+  check_invariant: z.object({
+    kind: z.enum(['sum', 'count']),
+    total_label: z.string().min(1).max(80),
+    column: z.string().min(1).max(80).optional(),
+    evidence: z.string().min(5).max(300),
+    rule_id: z.string().max(32).optional(),
+  }),
+  // Family 5: a page compared on desktop and on a phone; Oddhound computes the differences.
+  check_differential: z.object({
+    path: z.string().startsWith('/').max(300),
+    controls: z.array(z.string().min(1).max(120)).max(6).optional(),
+    rule_id: z.string().max(32).optional(),
+  }),
+  // Family 4: the form just filled (not submitted), submitted by Oddhound with an ordinary interruption.
+  check_interruption: z.object({
+    kind: z.enum(['double_submit', 'offline_submit', 'reload_after_submit']),
+    submit: z.string().min(1).max(80),
+    field: z.string().min(1).max(80),
+    list_path: z.string().startsWith('/').max(300),
+    rule_id: z.string().max(32).optional(),
+  }),
   check_two_tabs: z.object({
     path: z.string().startsWith('/').max(300),
     first: z.object({ field: z.string().min(1).max(80), value: z.string().min(1).max(200) }),
@@ -305,6 +327,43 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         second: s({ field: { type: 'string' }, value: { type: 'string' } }, ['field', 'value']),
         rule_id: { type: 'string' },
       }, ['path', 'first', 'second']),
+    },
+  },
+  {
+    type: 'function', function: {
+      name: 'check_invariant',
+      description: 'Register a numeric invariant the current page should satisfy; Oddhound reads and parses the numbers itself, checks it now and again after every later step on this page. sum: the number after total_label equals the sum of the column values in the table. count: the number after total_label equals the number of table rows. Give the evidence on the page that implies it, and rule_id only when an owner rule states it.',
+      parameters: s({
+        kind: { type: 'string', enum: ['sum', 'count'] },
+        total_label: { type: 'string', description: 'Text right before the total, exactly as shown, e.g. "Total guests" or "Order total".' },
+        column: { type: 'string', description: 'For sum: the table column header whose values add up to the total, e.g. "Party" or "Line total".' },
+        evidence: { type: 'string', description: 'What on the page implies the invariant, e.g. "the list shows each booking\'s party and a Total guests line below it".' },
+        rule_id: { type: 'string' },
+      }, ['kind', 'total_label', 'evidence']),
+    },
+  },
+  {
+    type: 'function', function: {
+      name: 'check_differential',
+      description: 'Compare one page on desktop and on a 390x844 phone for the same account. Oddhound opens it on both, lists the buttons and links in the page\'s main content on each (menus are ignored), and reports any that are usable on desktop but missing or covered on the phone, and errors shown on one only. Optionally name the controls to compare. Give rule_id only when an owner rule says the layouts must match.',
+      parameters: s({
+        path: { type: 'string', description: 'A page on the verified site, e.g. "/bookings/3".' },
+        controls: { type: 'array', maxItems: 6, items: { type: 'string' }, description: 'Optional: only these visible control labels.' },
+        rule_id: { type: 'string' },
+      }, ['path']),
+    },
+  },
+  {
+    type: 'function', function: {
+      name: 'check_interruption',
+      description: 'Interrupt a create form like a real user: fill the form on the current page first (with distinctive text in one field) but do not submit. Oddhound counts that text on list_path, submits the form itself with the interruption (double_submit: two quick presses; offline_submit: offline during the submit, then back online; reload_after_submit: reload while it is saving), retries once normally if nothing was saved, and counts again. More than one new record, or a success message while offline with nothing saved, is a finding.',
+      parameters: s({
+        kind: { type: 'string', enum: ['double_submit', 'offline_submit', 'reload_after_submit'] },
+        submit: { type: 'string', description: 'The form\'s submit button label, e.g. "Book table".' },
+        field: { type: 'string', description: 'Label of the filled field with distinctive text, e.g. "Guest name".' },
+        list_path: { type: 'string', description: 'Where the created records are listed, e.g. "/bookings".' },
+        rule_id: { type: 'string' },
+      }, ['kind', 'submit', 'field', 'list_path']),
     },
   },
   { type: 'function', function: { name: 'finish_run', description: 'End the exploration with a short factual summary. Refused while high-risk charters are untested and budget remains.', parameters: s({ summary: { type: 'string' } }, ['summary']) } },

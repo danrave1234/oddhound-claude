@@ -241,7 +241,8 @@ function instrument(version: number) {
     forms: forms.map((f, index) => ({ index, action: f.getAttribute('action') ?? '', method: (f.getAttribute('method') ?? 'get').toLowerCase(), noValidate: f.noValidate })),
     elements: out,
     tables,
-    text: clean(mainText).slice(0, 1200),
+    // Page text gets its own cap: clean() cuts labels at 120 characters, which hid most of the page.
+    text: mainText.replace(/\s+/g, ' ').trim().slice(0, 1200),
     viewport: { width: vw, height: vh },
     scroll: { y: Math.round(window.scrollY), maxY: Math.max(0, document.documentElement.scrollHeight - vh) },
   };

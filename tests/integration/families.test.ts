@@ -75,6 +75,9 @@ class ScriptedPlanner implements ChatProvider {
         { tool: 'fill', label: 'Notes (optional)', value: 'Window seat Q7 please' },
         { tool: 'click', label: 'Book table', expect: { outcome: 'accepted' } },
       ] }),
+      // Family 3 on the list the create landed on: the total (defect, demo rule R7) and the count (control).
+      call('check_invariant', { kind: 'sum', total_label: 'Total guests', column: 'Party', evidence: 'My bookings lists each party and a Total guests line', rule_id: 'R7' }),
+      call('check_invariant', { kind: 'count', total_label: 'Bookings', evidence: 'My bookings shows a Bookings count above the table' }),
       // Control for family 1: the create's claim is true (notes are on the booking page).
       call('check_claim', { claim: 'Booking #1 confirmed.', fields: ['Guest name', 'Notes'], revisit_path: '/bookings/1' }),
       call('navigate', { path: '/bookings/1/edit' }),
@@ -94,6 +97,25 @@ class ScriptedPlanner implements ChatProvider {
       // Family 2, two tabs: once against demo rule R6, once with no rule (it can only be needs_review).
       call('check_two_tabs', { path: '/bookings/1/edit', first: { field: 'Guest name', value: 'Two Tab Guest A1' }, second: { field: 'Party size', value: '5' }, rule_id: 'R6' }),
       call('check_two_tabs', { path: '/bookings/1/edit', first: { field: 'Guest name', value: 'Second Tab Guest B2' }, second: { field: 'Party size', value: '6' } }),
+      // Family 5: the booking page on desktop vs. a phone (defect, demo rule R8), and its Cancel button (control).
+      call('check_differential', { path: '/bookings/1', rule_id: 'R8' }),
+      call('check_differential', { path: '/bookings/1', controls: ['Cancel booking'] }),
+      // Family 4: fill the create form (no submit); Oddhound double-presses it (defect, demo rule R9), then
+      // submits a fresh copy while offline (held: nothing is sent, one normal retry saves one booking).
+      call('navigate', { path: '/bookings/new' }),
+      call('run_scenario_batch', { goal: 'fill a booking to submit with interruptions', steps: [
+        { tool: 'fill', label: 'Guest name', value: 'Double Press Guest K4' },
+        { tool: 'fill', label: 'Party size', value: '2' },
+        { tool: 'fill', label: 'Date', value: inDays(9) },
+      ] }),
+      call('check_interruption', { kind: 'double_submit', submit: 'Book table', field: 'Guest name', list_path: '/bookings', rule_id: 'R9' }),
+      call('navigate', { path: '/bookings/new' }),
+      call('run_scenario_batch', { goal: 'fill a booking to submit offline', steps: [
+        { tool: 'fill', label: 'Guest name', value: 'Offline Guest M2' },
+        { tool: 'fill', label: 'Party size', value: '3' },
+        { tool: 'fill', label: 'Date', value: inDays(9) },
+      ] }),
+      call('check_interruption', { kind: 'offline_submit', submit: 'Book table', field: 'Guest name', list_path: '/bookings', rule_id: 'R9' }),
       call('finish_run', { summary: 'Checked two save claims and cross-account access to a booking.' }),
     ];
     const next = steps[this.#turn++] ?? call('finish_run', { summary: 'done' });
@@ -109,8 +131,8 @@ const deps = (provider: ChatProvider) => ({
   lab: { allowedEndpoints: new Set([`127.0.0.1:${PORTS.vulnerable}`, `127.0.0.1:${PORTS.fixed}`]) },
 });
 
-describe('behavioral families 1 and 2 on the Harbor demo target', () => {
-  it('finds the lying save toast, the cross-account gap and the lost update, leaves the controls alone, and retests them unchanged', async () => {
+describe('behavioral families 1-5 on the Harbor demo target', () => {
+  it('finds the lying save toast, the cross-account gap, the lost update, the broken total, the double submit and the phone-only gap, leaves the controls alone, and retests them unchanged', async () => {
     await db.query('TRUNCATE runs CASCADE');
     const planner = new ScriptedPlanner();
     const principal = `test:families:${Date.now()}`;
@@ -119,7 +141,7 @@ describe('behavioral families 1 and 2 on the Harbor demo target', () => {
     expect(await executeRun(deps(planner), admitted.runId)).toBe('completed');
     const runId = admitted.runId;
     const reply = (s: RegExp) => planner.seen.find((t) => s.test(t)) ?? '';
-    if (process.env.FAMILIES_DEBUG) console.log(planner.seen.map((t) => t.split('\n')[0]).join('\n---\n'));
+    if (process.env.FAMILIES_DEBUG) console.log(planner.seen.map((t) => (t.split('\n')[0] || t.slice(0, 600))).join('\n---\n'));
 
     // Family 1: the create's claim held (control), the edit's did not, the invented claim was refused.
     expect(reply(/^Claim held/)).toMatch(/"Notes \(optional\)" is on \/bookings\/1/);
@@ -134,7 +156,14 @@ describe('behavioral families 1 and 2 on the Harbor demo target', () => {
 
     const events = (await db.query<{ type: string; payload: any }>('SELECT type, payload FROM run_events WHERE run_id = $1 ORDER BY seq', [runId])).rows;
     const finished = events.filter((e) => e.type === 'scenario.finished').map((e) => `${e.payload.family}:${e.payload.outcome}`);
-    expect(finished).toEqual(['claim_vs_truth:passed', 'claim_vs_truth:failed', 'two_actors:failed', 'two_actors:passed', 'two_actors:failed', 'two_actors:failed']);
+    expect(finished).toEqual(['invariant:failed', 'invariant:passed', 'claim_vs_truth:passed', 'claim_vs_truth:failed', 'two_actors:failed', 'two_actors:passed', 'two_actors:failed', 'two_actors:failed', 'differential:failed', 'differential:passed', 'interruption:failed', 'interruption:passed']);
+    // (The conversation may be compacted into Oddhound's notebook around here, so read the recorded event.)
+    expect(events.find((e) => e.type === 'scenario.finished' && e.payload.kind === 'double_submit')!.payload).toMatchObject({ outcome: 'failed', before: 0, afterInterruption: 2, created: 2 });
+    expect(reply(/^Interruption check passed/)).toMatch(/submitting while offline, then coming back online and one normal retry created exactly one record/);
+    expect(reply(/^Differential check FAILED/)).toMatch(/link "Edit booking" is missing in a 390x844 phone but usable in desktop/);
+    expect(reply(/^Differential check passed/)).toMatch(/the 1 control\(s\) usable in desktop are usable in a 390x844 phone too/);
+    expect(reply(/^Invariant BROKEN/)).toMatch(/"Total guests" shows 0, but the 1 "Party" value\(s\) \(2\) add up to 2/);
+    expect(reply(/^Invariant holds/)).toMatch(/"Bookings" shows 1 and the table has 1 row/);
     expect(reply(/^Two-tab check FAILED/)).toMatch(/the change saved in the first tab was silently undone: the save from the out-of-date tab put back "Harbor Guest Q7 Edited"/);
     const window = events.find((e) => e.type === 'scenario.finished' && e.payload.outcome === 'failed' && e.payload.family === 'claim_vs_truth')!.payload;
     expect(window).toMatchObject({ looks: 3, windowMs: 4_500 });
@@ -149,7 +178,7 @@ describe('behavioral families 1 and 2 on the Harbor demo target', () => {
     const findings = (await db.query<{ id: string; rule_id: string | null; family: string; verification: string; category: string; lifecycle: string; scenario_id: string; limitations: string; actor: string }>(
       `SELECT id, rule_id, family, verification, category, lifecycle, scenario_id, limitations, actor FROM findings WHERE run_id = $1 AND category <> 'configuration_observation' ORDER BY rule_id`, [runId])).rows;
     expect(findings.map((f) => `${f.rule_id ?? 'null'}:${f.family}:${f.verification}:${f.category}`)).toEqual([
-      'B11:claim_vs_truth:verified:verified_issue', 'B7:two_actors:verified:verified_issue', 'R6:two_actors:verified:verified_issue', 'null:two_actors:inconclusive:needs_review',
+      'B11:claim_vs_truth:verified:verified_issue', 'B7:two_actors:verified:verified_issue', 'R6:two_actors:verified:verified_issue', 'R7:invariant:verified:verified_issue', 'R8:differential:verified:verified_issue', 'R9:interruption:verified:verified_issue', 'null:two_actors:inconclusive:needs_review',
     ]);
     // The rule-less two-tab check reproduced, but no explicit rule backs it: review only, never verified.
     expect(findings.find((f) => f.rule_id === null)!.limitations).toMatch(/Reproduced 2\/2, but no explicit or owner-approved rule/);
@@ -169,7 +198,7 @@ describe('behavioral families 1 and 2 on the Harbor demo target', () => {
     if (!retest.ok) throw new Error(retest.reason);
     expect(await executeRun(deps(new ScriptedPlanner()), retest.runId)).toBe('completed');
     const after = (await db.query<{ rule_id: string; lifecycle: string }>(`SELECT rule_id, lifecycle FROM findings WHERE run_id = $1 AND category = 'verified_issue' ORDER BY rule_id`, [runId])).rows;
-    expect(after).toEqual([{ rule_id: 'B11', lifecycle: 'fixed' }, { rule_id: 'B7', lifecycle: 'fixed' }, { rule_id: 'R6', lifecycle: 'fixed' }]);
+    expect(after).toEqual([{ rule_id: 'B11', lifecycle: 'fixed' }, { rule_id: 'B7', lifecycle: 'fixed' }, { rule_id: 'R6', lifecycle: 'fixed' }, { rule_id: 'R7', lifecycle: 'fixed' }, { rule_id: 'R8', lifecycle: 'fixed' }, { rule_id: 'R9', lifecycle: 'fixed' }]);
 
     // Retest on the still-vulnerable build keeps both open (no false "fixed").
     await db.query(`UPDATE findings SET lifecycle = 'open' WHERE run_id = $1 AND category = 'verified_issue'`, [runId]);

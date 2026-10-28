@@ -11,7 +11,7 @@ import type { BrowserContext, Page } from 'playwright';
 import { canonicalJson, sha256 } from '../ledger/runs.ts';
 import { attachSentinels, checkPage, describeSignal, routeOf, type Signal } from '../browser/sentinels.ts';
 import { ExpectSchema, judgeExpectation, pageFacts } from './expect.ts';
-import { claimVisible, judgeCrossActor, judgePersistence, judgeTwoTabs, readView, rejectionShown, type PageView } from './behavior.ts';
+import { DOUBLE_PRESS_GAP_MS, INTERRUPTION_SETTLE_MS, claimVisible, judgeCrossActor, judgeInterruption, judgeInvariant, judgePersistence, judgeTwoTabs, occurrences, readTables, readView, rejectionShown, type Interruption, type PageView } from './behavior.ts';
 
 const Template = z.string().max(200);
 const FieldMap = z.record(z.string().min(1).max(80), Template).refine((m) => Object.keys(m).length > 0 && Object.keys(m).length <= 12, 'between 1 and 12 fields');
@@ -135,6 +135,41 @@ export const ScenarioSchema = z.discriminatedUnion('kind', [
     second: z.object({ field: z.string().min(1).max(80), value: z.string().min(1).max(200) }),
     sequential: z.boolean(),
     expectation: z.literal('no_lost_update'),
+  }),
+  // Family 3, invariant: recreate the records the page summarises (the run's own create forms), open the
+  // page and check the invariant with numbers parsed by code.
+  z.object({
+    kind: z.literal('invariant'),
+    device: z.enum(['desktop', 'mobile']),
+    auth: AuthRecipeSchema.optional(),
+    setups: z.array(SetupSchema).max(4),
+    path: z.string().startsWith('/').max(300),
+    invariant: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('sum'), total: z.string().min(1).max(80), column: z.string().min(1).max(80) }),
+      z.object({ kind: z.literal('count'), total: z.string().min(1).max(80), column: z.string().min(1).max(80).optional() }),
+    ]),
+  }),
+  // Family 5, differential: the same page for the same account on desktop and on a phone; each control
+  // that is visible on desktop must be visible on the phone too.
+  z.object({
+    kind: z.literal('differential'),
+    device: z.literal('desktop'),
+    auth: AuthRecipeSchema.optional(),
+    setup: SetupSchema.optional(),
+    path: z.string().startsWith('/').max(300),
+    compare: z.literal('desktop_vs_mobile'),
+    controls: z.array(z.object({ label: z.string().min(1).max(120), role: z.enum(['button', 'link']) })).min(1).max(6),
+  }),
+  // Family 4, interruption: the recorded create form submitted with an ordinary interruption; the list
+  // must gain exactly one record carrying `value`. `none` is the neighbouring control (a normal submit).
+  z.object({
+    kind: z.literal('interruption'),
+    device: z.enum(['desktop', 'mobile']),
+    auth: AuthRecipeSchema.optional(),
+    form: FormSchema,
+    listPath: z.string().startsWith('/').max(300),
+    value: z.string().min(4).max(200),
+    interruption: z.enum(['none', 'double_submit', 'offline_submit', 'reload_after_submit']),
   }),
 ]);
 export type Scenario = z.infer<typeof ScenarioSchema>;
@@ -352,6 +387,39 @@ export async function replayScenario(s: Scenario, env: ReplayEnv): Promise<Repla
     if (s.kind === 'claim_check') return await replayClaim(s, open, env, screenshots);
     if (s.kind === 'cross_actor') return await replayCrossActor(s, open, env, screenshots);
     if (s.kind === 'two_tab') return await replayTwoTabs(s, open, env, screenshots);
+    if (s.kind === 'interruption') return await replayInterruption(s, open, env, screenshots);
+    if (s.kind === 'differential') {
+      // Same account on both devices: the role A session is reused for the phone context.
+      const desk = await open('desktop', s.auth ? 'A' : undefined, s.auth);
+      const vars: Record<string, string> = { ...env.identity(), marker: `OH${randomBytes(4).toString('hex').toUpperCase()}` };
+      if (s.setup) vars.id = await runSetup(desk, env.origin, s.setup, vars);
+      const url = new URL(expand(s.path, vars), env.origin).toString();
+      const visibleIn = async (page: Page) => {
+        await page.goto(url, { waitUntil: 'domcontentloaded' });
+        return Promise.all(s.controls.map(async (c) => page.getByRole(c.role, { name: c.label, exact: true }).first().isVisible().catch(() => false)));
+      };
+      const onDesktop = await visibleIn(desk);
+      const phone = await open('mobile', s.auth ? 'A' : undefined, s.auth);
+      const onPhone = await visibleIn(phone);
+      screenshots.push(await shot(phone, 'the same page on a 390x844 phone'));
+      if (onDesktop.some((v) => !v)) return { outcome: 'inconclusive', observed: `Not every control was visible on desktop in a fresh session (${s.controls.filter((_, i) => !onDesktop[i]).map((c) => `"${c.label}"`).join(', ')}), so the comparison cannot be made.`, details: { onDesktop, onPhone }, screenshots };
+      const gone = s.controls.filter((_, i) => !onPhone[i]);
+      return {
+        outcome: gone.length ? 'failed' : 'passed',
+        observed: gone.length ? `Reproduced in a fresh session: ${gone.map((c) => `${c.role} "${c.label}"`).join(', ')} ${gone.length === 1 ? 'is' : 'are'} visible on desktop but not on a 390x844 phone.` : 'Every compared control is visible on both desktop and a 390x844 phone.',
+        details: { controls: s.controls, onDesktop, onPhone },
+        screenshots,
+      };
+    }
+    if (s.kind === 'invariant') {
+      const page = await open(s.device, s.auth ? 'A' : undefined, s.auth);
+      const vars: Record<string, string> = { ...env.identity(), marker: `OH${randomBytes(4).toString('hex').toUpperCase()}` };
+      for (const st of s.setups) await runSetup(page, env.origin, st, vars);
+      await page.goto(new URL(expand(s.path, vars), env.origin).toString(), { waitUntil: 'domcontentloaded' });
+      const v = judgeInvariant(s.invariant, { text: (await readView(page)).text, tables: await readTables(page) });
+      screenshots.push(await shot(page, 'page the invariant was checked on'));
+      return { outcome: v.outcome, observed: `${v.outcome === 'inconclusive' ? 'Cannot judge' : v.outcome === 'failed' ? 'Reproduced in a fresh session' : 'Held in a fresh session'}: ${v.detail}.`, details: { invariant: s.invariant, values: v.values, setups: s.setups.length }, screenshots };
+    }
 
     // mobile_reachability
     const page = await open('mobile', s.auth ? 'A' : undefined, s.auth);
@@ -656,6 +724,70 @@ async function replayCrossActor(s: CrossScenario, open: Opener, env: ReplayEnv, 
   };
 }
 
+/**
+ * Fill a form and submit it with an ordinary user interruption (shared by exploration and replay).
+ * Offline is a client condition (context.setOffline), not proof of server behaviour under real network loss.
+ */
+export async function submitWithInterruption(page: Page, form: { fields: Record<string, string>; submit: string }, vars: Record<string, string>, kind: Interruption): Promise<{ claimedWhileOffline: boolean }> {
+  for (const [key, template] of Object.entries(form.fields)) await (await fieldLocator(page, key)).fill(expand(template, vars), { timeout: 5_000 });
+  const button = page.getByRole('button', { name: form.submit, exact: false }).first();
+  if (!(await button.count())) throw new ReplayBlocked(`submit not found: ${form.submit}`);
+  let claimedWhileOffline = false;
+  if (kind === 'double_submit') {
+    // An impatient second press while the first save is still in flight (a dblclick's second press
+    // would only cancel a submission the browser had not sent yet).
+    // Real mouse input at the button: Playwright's own click would wait for the first navigation.
+    await button.scrollIntoViewIfNeeded({ timeout: 5_000 });
+    const box = await button.boundingBox();
+    if (!box) throw new ReplayBlocked(`submit "${form.submit}" has no position on the page`);
+    const x = box.x + box.width / 2, y = box.y + box.height / 2;
+    await page.mouse.click(x, y);
+    await page.waitForTimeout(DOUBLE_PRESS_GAP_MS);
+    await page.mouse.click(x, y); // lands on the same button unless the page has already moved on
+  } else if (kind === 'offline_submit') {
+    await page.context().setOffline(true);
+    try {
+      await button.click({ timeout: 5_000, noWaitAfter: true }).catch(() => {});
+      await page.waitForTimeout(INTERRUPTION_SETTLE_MS);
+      claimedWhileOffline = (await page.locator('[role=status]:visible, .notice:visible, .success:visible, .toast:visible').count().catch(() => 0)) > 0 && !(await rejectionShown(page));
+    } finally { await page.context().setOffline(false); }
+  } else if (kind === 'reload_after_submit') {
+    await button.click({ timeout: 5_000, noWaitAfter: true });
+    await page.waitForTimeout(150);
+    await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
+  } else {
+    await button.click({ timeout: 5_000 });
+  }
+  await page.waitForTimeout(INTERRUPTION_SETTLE_MS);
+  await page.waitForLoadState('domcontentloaded').catch(() => {});
+  return { claimedWhileOffline };
+}
+
+type InterruptScenario = Extract<Scenario, { kind: 'interruption' }>;
+
+/** Family 4 replay: count the records the interrupted submit (plus at most one normal retry) created. */
+async function replayInterruption(s: InterruptScenario, open: Opener, env: ReplayEnv, screenshots: ReplayResult['screenshots']): Promise<ReplayResult> {
+  const page = await open(s.device, s.auth ? 'A' : undefined, s.auth);
+  const vars: Record<string, string> = { ...env.identity(), marker: `OH${randomBytes(4).toString('hex').toUpperCase()}` };
+  const value = expand(s.value, vars);
+  const list = new URL(expand(s.listPath, vars), env.origin).toString();
+  const count = async () => { await page.goto(list, { waitUntil: 'domcontentloaded' }); return occurrences((await readView(page)).text, value); };
+  const before = await count();
+  await page.goto(new URL(expand(s.form.path, vars), env.origin).toString(), { waitUntil: 'domcontentloaded' });
+  const { claimedWhileOffline } = await submitWithInterruption(page, s.form, vars, s.interruption);
+  screenshots.push(await shot(page, `after the ${s.interruption.replace(/_/g, ' ')}`));
+  const afterInterruption = await count();
+  let afterRetry: number | undefined;
+  if (afterInterruption === before && s.interruption !== 'none') {
+    await page.goto(new URL(expand(s.form.path, vars), env.origin).toString(), { waitUntil: 'domcontentloaded' });
+    await submitWithInterruption(page, s.form, vars, 'none');
+    afterRetry = await count();
+  }
+  screenshots.push(await shot(page, 'record list'));
+  const v = judgeInterruption({ kind: s.interruption, before, afterInterruption, afterRetry, claimedWhileOffline });
+  return { outcome: v.outcome, observed: `${v.outcome === 'failed' ? 'Reproduced in a fresh session' : v.outcome === 'passed' ? 'Held in a fresh session' : 'Cannot judge'}: ${v.detail}.`, details: { before, afterInterruption, afterRetry, claimedWhileOffline, created: v.created }, screenshots };
+}
+
 /** The submit button of the form a field belongs to. */
 async function submitOf(page: Page, field: string) {
   const form = (await fieldLocator(page, field)).locator('xpath=ancestor::form[1]');
@@ -715,6 +847,7 @@ async function replayTwoTabs(s: TwoTabScenario, open: Opener, env: ReplayEnv, sc
 /** A valid neighbouring case that must keep working (the control for a form_rule or two_tab finding). */
 export function controlFor(s: Scenario, validValues?: Record<string, string>): Scenario | null {
   if (s.kind === 'two_tab' && !s.sequential) return { ...s, sequential: true };
+  if (s.kind === 'interruption' && s.interruption !== 'none') return { ...s, interruption: 'none' };
   if (s.kind !== 'form_rule' || s.expectation !== 'rejected' || !validValues) return null;
   return { ...s, form: { ...s.form, fields: { ...s.form.fields, ...validValues } }, expectation: 'accepted' };
 }

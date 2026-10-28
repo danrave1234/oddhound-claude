@@ -25,8 +25,8 @@ This is an honest record of what was built, what was actually tested, and what i
 
 | Suite | Command | Result |
 |---|---|---|
-| Unit + integration (SSRF policy, egress proxy incl. rebinding and byte/request caps, scope decisions, ownership verification against a live server, ledgers under races, fencing, durable events, report fencing, export template, scenario soundness, credential vault, detectors, scout, stated rules, scenario batches through the worker pipeline, batch retest) | `pnpm test` | **114/114 pass** (Oct 28) |
-| End-to-end lab, offline test double (deterministic, no paid calls) | `node --env-file=.env tests/e2e/run-e2e.ts` | **all checks pass** (Oct 28, default batch mode) |
+| Unit + integration (SSRF policy, egress proxy incl. rebinding and byte/request caps, scope decisions, ownership verification against a live server, ledgers under races, fencing, durable events, report fencing, export template, scenario soundness, credential vault, detectors, scout, stated rules, scenario batches through the worker pipeline, batch retest) | `pnpm test` | **162/162 pass** (Oct 28, branch `behavioral-families`) |
+| End-to-end lab, offline test double (deterministic, no paid calls) | `node --env-file=.env tests/e2e/run-e2e.ts` | **all 25 checks pass** (Oct 28, default batch mode, incl. the five behavioral families) |
 | End-to-end lab, real Meta model | `E2E_PROVIDER=meta node --env-file=.env tests/e2e/run-e2e.ts` | see §3 |
 | HTTP tenant isolation (SELF-04) against the running web app | `node --env-file=.env tests/e2e/web-access.ts` | **13/13 pass** |
 | In-container network self-test (SELF-01/02/08) | `docker exec -u pwuser <run container> node26 /opt/oddhound/netcheck.ts 172.30.77.10 4310` | **10/10 pass** |
@@ -67,7 +67,7 @@ Implements MVP §7 "Scout, scenario batches and surprise-driven inference" and �
 | **Coverage** | Per run: controls on the pages the run reached, exercised (a browser action used them and succeeded), blocked by policy (off-site or denied by the contract), and not exercised. Shown on the run page as "N of M controls exercised" with the per-page table and its denominator; never coverage of the whole site. | unit (counting), `batch-runner.test.ts` (6 exercised, 1 blocked) |
 | **Retest** | A failed expectation can be reported as `{kind:"batch", batch, step}`. Oddhound saves the recorded steps and expectations as a `batch` scenario; verification and retest replay it unchanged under the same hash rule and the same expectation judge. | `batch-runner.test.ts`: verified 2/2, *fixed* on the fixed server, still *open* on the unfixed one |
 
-**Not built:** server-side enforcement of stated rules through a separately verified, scoped request mode (MVP §9). This build tests stated rules only through the normal user interface. The behavioural families of MVP §9 (claim vs. truth, two tabs, invariants, interruption, differential) have no new labelled fixture defects yet.
+**Not built:** server-side enforcement of stated rules through a separately verified, scoped request mode (MVP §9). This build tests stated rules only through the normal user interface. The behavioural families of MVP §9 are in §3f below.
 
 **R4 measurement.** Same demo target, goals, rules and $2/60-turn/250-action limits; real `muse-spark-1.3`; fresh sandboxed container per run (`sandbox_on`); exploration capped at $0.50 by the harness (`tests/e2e/r4-compare.ts`; not reached). "Defects" = seeded rules R1, R2, R4, R5 verified 2/2 by independent replay.
 
@@ -88,6 +88,25 @@ Implements MVP §7 "Scout, scenario batches and surprise-driven inference" and �
 - Two runs per mode on one site is a small sample, and run-to-run variation is large (per-step found 3 then 2). Not repeated on a real verified site: no locally verified real site was available, and the hosted deployment was out of scope for this branch.
 
 Total Meta spend for R4: **$1.21**.
+
+## 3f. Behavioral test families (MVP §9, October 28, 2026; branch `behavioral-families`)
+
+Each family is a tool the model calls to say *what* to check; Oddhound then acts (ledgered, rate-limited, inside scope), reads the page and decides with code in `packages/core/verifier/behavior.ts`. The same functions judge exploration, the two independent replays and the retest. Every family has its own replayable scenario kind with a fixed oracle, a Playwright export, a fix-brief template and a neighbouring control. Findings record their family (`findings.family`, migration 006), contexts and limitations.
+
+| Family | Tool | Code decides | Rule basis | Harbor defect / control |
+|---|---|---|---|---|
+| 1 Claim vs. truth | `check_claim` | The claimed message must be on the page after the save; saved values are looked for after reloading the landed page and reopening the record, in a fixed 4.5 s window (3 looks), recorded with the finding. | New baseline **B11** when the page claimed success; with no success message the candidate is replayed but stays `needs_review`. | D6 "Changes saved." while edited notes are dropped / the create's "Booking #N confirmed." holds |
+| 2a Cross-actor | `check_cross_actor` | Only ids Oddhound saw actor A create. Oddhound signs up actor B itself with the recorded sign-up, confirms A sees its own text, guards against coincidence (B's home page), opens exactly the URL as B, presses visible controls, and compares A's record before/after. | B7. Verified only when B's own list does not show the record (privacy established by the app); otherwise `needs_review`. | D3 booking page readable by another account / its edit page refuses B |
+| 2b Two tabs | `check_two_tabs` | First tab saves one field; the out-of-date tab saves another; the reopened record must keep the first change or the stale save must be refused. | Owner/demo rule (Harbor **R6**) or `needs_review`. | D7 stale save silently undoes the other tab / the same two edits in one tab |
+| 3 Invariants | `check_invariant` | `sum` (a labelled total = sum of a table column) or `count` (= table rows). Numbers parsed by code (assumptions recorded); re-checked after every later step on that page. | Owner/demo rule (Harbor **R7**) or `needs_review`. | D8 "Total guests" leaves out a booking / "Bookings: N" matches the rows |
+| 4 Interruption | `check_interruption` | Oddhound submits the filled form with a second real mouse press 0.25 s later, offline during the submit (`context.setOffline`, stated as a client condition), or a reload in flight; one normal retry if nothing saved; counts the distinctive value on the list. | Owner/demo rule (Harbor **R9**) or `needs_review`. | D10 a second press while the save is slow creates two bookings / one normal press creates one |
+| 5 Differential | `check_differential` | The page's main-content buttons/links and error messages on desktop vs. a 390×844 phone for the same account; digits in labels ignored, menus/headers excluded. | Owner/demo rule (Harbor **R8**) or `needs_review`. | D9 "Edit booking" hidden on phones / "Cancel booking" on both |
+
+**Evidence (all offline, no paid inference):** `tests/unit/behavior.test.ts` (verdict functions, schemas, exports compile, fix briefs); `tests/integration/families.test.ts` (real Chromium + PostgreSQL + the real Harbor builds, recorded model replies): every family's defect is verified 2/2, every control passes and is not flagged, rule-less two-tab variant stays `needs_review`, everything flips to *fixed* on the corrected build and stays *open* on the vulnerable one. The Docker-lab e2e (`tests/e2e/run-e2e.ts`, fresh sandboxed browser container per run) checks the same with the offline test double.
+
+**Fixed on the way:** sign-up landing on `?welcome=1` was recorded as creating record 1 (replays then "set up" with the registration form); a wrapped textarea's text leaked into its label; observation page text was cut at 120 characters by the label cleaner (1,200 intended), which hid most of each page from the model — model input per observation is now larger.
+
+**Not done:** families 1 and 2 on a real verified site (R4 proof); any real-Meta run that exercises the new tools; Back/forward, session-expiry and mobile-continuation interruptions; differential actor A vs. actor B and before/after-fix comparisons (only desktop vs. phone); invariants beyond sum/count on a page (no "decreases by one per booking" across steps); a family column in the findings UI.
 
 ## 3b. First real verified site: danravekeh.com (October 27, 2026)
 

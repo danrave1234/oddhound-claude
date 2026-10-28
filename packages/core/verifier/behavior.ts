@@ -167,6 +167,158 @@ export async function rejectionShown(page: Page): Promise<boolean> {
   return (await page.locator('[role=alert]:visible, .error:visible, .invalid-feedback:visible, :user-invalid').count().catch(() => 0)) > 0;
 }
 
+// ---- Family 3: invariants. Numbers are parsed here, never by the model.
+
+/** How numbers are read; recorded with every invariant finding. */
+export const NUMBER_ASSUMPTIONS = 'Numbers read with "." as the decimal point and "," as a thousands separator; currency symbols and units ignored; amounts compared to within 0.005 (2-decimal rounding).';
+
+/** The single number in a piece of text ("$1,234.50" -> 1234.5, "7 guests" -> 7), or null when there is none or more than one. */
+export function parseNumber(text: string): number | null {
+  const found = text.replace(/(\d),(?=\d{3}\b)/g, '$1').match(/[-−]?\d+(?:\.\d+)?/g);
+  if (!found || found.length !== 1) return null;
+  return Number(found[0]!.replace('−', '-'));
+}
+
+/** The number written right after a label in the page text ("Total guests: 7"), or null. */
+export function labelledNumber(text: string, label: string): number | null {
+  const esc = label.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+  const m = new RegExp(`${esc}\\s*[:=]?\\s*([^\\s\\d\\-−]{0,3}\\s?[-−]?[\\d.,]+)`, 'i').exec(text);
+  return m ? parseNumber(m[1]!) : null;
+}
+
+export type Table = { headers: string[]; rows: string[][] };
+
+/** Every table on the page: header cells and body rows (trusted code). */
+export async function readTables(page: Page): Promise<Table[]> {
+  return page.locator('table').evaluateAll((tables) => tables.slice(0, 6).map((t) => {
+    const cells = (tr: Element) => Array.from(tr.querySelectorAll('th,td')).map((c) => (c.textContent ?? '').replace(/\s+/g, ' ').trim());
+    const trs = Array.from(t.querySelectorAll('tr'));
+    const headRow = t.querySelector('thead tr') ?? trs.find((tr) => tr.querySelector('th') && !tr.querySelector('td')) ?? null;
+    return { headers: headRow ? cells(headRow) : [], rows: trs.filter((tr) => tr !== headRow).slice(0, 200).map(cells) };
+  })).catch(() => []);
+}
+
+export type Invariant =
+  | { kind: 'sum'; total: string; column: string }
+  | { kind: 'count'; total: string; column?: string };
+
+export type InvariantVerdict = { outcome: 'passed' | 'failed' | 'inconclusive'; detail: string; values: { total: number | null; parts: number[]; computed: number | null } };
+
+/**
+ * Family 3: check a numeric invariant on what a page shows. sum: the number after `total` equals the sum
+ * of the `column` cells. count: the number after `total` equals the number of rows of the table.
+ */
+export function judgeInvariant(inv: Invariant, page: { text: string; tables: Table[] }): InvariantVerdict {
+  const none = { total: null, parts: [], computed: null };
+  const want = norm(inv.column ?? '');
+  const table = inv.column ? page.tables.find((t) => t.headers.some((h) => norm(h) === want || norm(h).includes(want))) : page.tables.find((t) => t.rows.length);
+  if (!table) return { outcome: 'inconclusive', detail: inv.column ? `no table with a "${inv.column}" column on the page` : 'no table on the page', values: none };
+  const isTotalRow = (r: string[]) => r.some((c) => norm(c).includes(norm(inv.total)));
+  const body = table.rows.filter((r) => r.length && !isTotalRow(r));
+  let total = labelledNumber(page.text, inv.total);
+  const col = inv.column ? table.headers.findIndex((h) => norm(h) === want || norm(h).includes(want)) : -1;
+  if (total === null && col >= 0) { const row = table.rows.find(isTotalRow); if (row?.[col] !== undefined) total = parseNumber(row[col]!); }
+  if (total === null) return { outcome: 'inconclusive', detail: `no single number found after "${inv.total}"`, values: none };
+  if (inv.kind === 'count') {
+    const computed = body.length;
+    return computed === total
+      ? { outcome: 'passed', detail: `"${inv.total}" shows ${total} and the table has ${computed} row(s)`, values: { total, parts: [], computed } }
+      : { outcome: 'failed', detail: `"${inv.total}" shows ${total}, but the table has ${computed} row(s)`, values: { total, parts: [], computed } };
+  }
+  const parts = body.map((r) => (r[col] === undefined ? null : parseNumber(r[col]!)));
+  if (!parts.length) return { outcome: 'inconclusive', detail: 'the table has no rows to add up', values: { total, parts: [], computed: null } };
+  if (parts.some((p) => p === null)) return { outcome: 'inconclusive', detail: `some "${inv.column}" cells hold no single number`, values: { total, parts: [], computed: null } };
+  const nums = parts as number[];
+  const computed = Math.round(nums.reduce((a, b) => a + b, 0) * 100) / 100;
+  return Math.abs(computed - total) < 0.005
+    ? { outcome: 'passed', detail: `"${inv.total}" ${total} equals the sum of ${nums.length} "${inv.column}" value(s)`, values: { total, parts: nums, computed } }
+    : { outcome: 'failed', detail: `"${inv.total}" shows ${total}, but the ${nums.length} "${inv.column}" value(s) (${nums.join(' + ')}) add up to ${computed}`, values: { total, parts: nums, computed } };
+}
+
+// ---- Family 5: differential comparison between contexts that should agree.
+
+/** A control as compared across contexts: digits folded (ids, counts, times) so they are not differences. */
+export const controlKey = (label: string) => norm(label).replace(/\d+/g, '#');
+
+export type ContextControls = { context: string; controls: { label: string; role: 'button' | 'link'; covered?: boolean }[]; errors: string[] };
+
+export type DifferentialVerdict = {
+  outcome: 'passed' | 'failed' | 'inconclusive';
+  detail: string;
+  /** Controls usable in the first context but missing (or covered) in the second. */
+  missing: { label: string; role: 'button' | 'link'; why: 'absent' | 'covered' }[];
+  errorsOnlyIn: string[];
+};
+
+/**
+ * Family 5: the page's own actions (main content only: navigation menus legitimately collapse on phones)
+ * and its error messages, compared between a reference context and another one. `focus` limits the
+ * comparison to the controls the model named.
+ */
+export function judgeDifferential(ref: ContextControls, other: ContextControls, focus?: string[]): DifferentialVerdict {
+  const want = focus?.length ? new Set(focus.map(controlKey)) : null;
+  const pick = (c: ContextControls) => c.controls.filter((x) => !want || want.has(controlKey(x.label)));
+  const refControls = pick(ref).filter((x) => !x.covered);
+  if (!refControls.length) return { outcome: 'inconclusive', detail: `no ${want ? 'named ' : ''}control is usable in ${ref.context}, so there is nothing to compare`, missing: [], errorsOnlyIn: [] };
+  const otherByKey = new Map(pick(other).map((x) => [controlKey(x.label), x]));
+  const missing: DifferentialVerdict['missing'] = [];
+  for (const c of refControls) {
+    const o = otherByKey.get(controlKey(c.label));
+    if (!o) missing.push({ label: c.label, role: c.role, why: 'absent' });
+    else if (o.covered) missing.push({ label: c.label, role: c.role, why: 'covered' });
+  }
+  const refErrors = new Set(ref.errors.map(controlKey));
+  const errorsOnlyIn = other.errors.filter((e) => !refErrors.has(controlKey(e)));
+  if (!missing.length && !errorsOnlyIn.length) return { outcome: 'passed', detail: `the ${refControls.length} control(s) usable in ${ref.context} are usable in ${other.context} too`, missing, errorsOnlyIn };
+  const parts = [
+    ...missing.map((m) => `${m.role} "${m.label}" is ${m.why === 'absent' ? 'missing' : 'covered by another element'} in ${other.context} but usable in ${ref.context}`),
+    ...errorsOnlyIn.map((e) => `only ${other.context} shows the error ${JSON.stringify(e.slice(0, 80))}`),
+  ];
+  return { outcome: 'failed', detail: parts.join('; '), missing, errorsOnlyIn };
+}
+
+// ---- Family 4: interruption.
+
+export const INTERRUPTIONS = ['double_submit', 'offline_submit', 'reload_after_submit'] as const;
+export type Interruption = (typeof INTERRUPTIONS)[number] | 'none';
+
+/** How long an interrupted submit is given to land before the list is read again. */
+export const INTERRUPTION_SETTLE_MS = 1_500;
+/** The gap between the two presses of a double submit: the first request is already on its way. */
+export const DOUBLE_PRESS_GAP_MS = 250;
+
+/** How often a (distinctive) value appears in a page's text. */
+export function occurrences(text: string, value: string): number {
+  const t = norm(text), v = norm(value);
+  if (!v) return 0;
+  let n = 0;
+  for (let i = t.indexOf(v); i !== -1; i = t.indexOf(v, i + v.length)) n++;
+  return n;
+}
+
+export type InterruptionFacts = {
+  kind: Interruption;
+  /** Occurrences of the submitted value on the list before, right after the interruption, and after one normal retry (when nothing was saved). */
+  before: number; afterInterruption: number; afterRetry?: number;
+  /** The page showed a success message while the browser was offline. */
+  claimedWhileOffline: boolean;
+};
+
+/**
+ * Family 4: one user's interrupted submit (plus at most one normal retry when nothing was saved) must
+ * create exactly one record, and the page must not report success for a save that did not happen.
+ */
+export function judgeInterruption(f: InterruptionFacts): { outcome: 'passed' | 'failed' | 'inconclusive'; detail: string; created: number } {
+  const after = f.afterRetry ?? f.afterInterruption;
+  const created = after - f.before;
+  const what = f.kind === 'double_submit' ? 'pressing submit again 0.25 s after the first press' : f.kind === 'offline_submit' ? 'submitting while offline, then coming back online' : f.kind === 'reload_after_submit' ? 'reloading while the submit was in flight' : 'a normal submit';
+  const retried = f.afterRetry !== undefined ? ' and one normal retry' : '';
+  if (f.claimedWhileOffline && f.afterInterruption === f.before) return { outcome: 'failed', created, detail: `the page reported success while offline, but nothing was saved (${what})` };
+  if (created > 1) return { outcome: 'failed', created, detail: `${what}${retried} created ${created} records instead of one` };
+  if (created === 1) return { outcome: 'passed', created, detail: `${what}${retried} created exactly one record` };
+  return { outcome: 'inconclusive', created, detail: `nothing was saved after ${what}${retried}, so duplication cannot be judged` };
+}
+
 /** Swap one record number in a path for a template variable. */
 export function swapId(path: string, id: string, to: string): string {
   const [p, q] = path.split('?', 2) as [string, string | undefined];

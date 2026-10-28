@@ -16,7 +16,7 @@ import { saveArtifact } from '../artifacts/store.ts';
 import type { BrowserRuntime, ProvisionedBrowser } from '../browser/runtime.ts';
 import { newScopedContext } from '../browser/runtime.ts';
 import { attachScope, policyFromContract, type ScopeDecision } from '../browser/scope.ts';
-import { formatObservation, stateFingerprint, type Observation } from '../browser/snapshot.ts';
+import { formatObservation, routePattern, stateFingerprint, type Observation } from '../browser/snapshot.ts';
 import { judgeExpectation, pageFacts, type Expectation } from '../verifier/expect.ts';
 import { isBoundaryTemplate, resolveBoundary } from './boundary.ts';
 import { CoverageTracker } from './coverage.ts';
@@ -32,8 +32,8 @@ import { findByLabel, usesRef } from './by-label.ts';
 import { blockedReason, disabledReason } from '../browser/click-check.ts';
 import { readSiteMap } from '../browser/site-map.ts';
 import { runHandoff, HandoffEnded } from './handoff.ts';
-import { CLICK_ROLES, controlFor, fieldValue, fillAndSubmit, saveField, newReplaySessions, recordIdsInUrl, replayScenario, scenarioDefect, scenarioHash, type Setup, type AuthRecipe, type Oracle, type ReplayEnv, type Scenario, type TraceStep } from '../verifier/scenario.ts';
-import { CLAIM_RETRY_DELAYS_MS, CLAIM_WINDOW_MS, claimVisible, distinctiveValues, judgeCrossActor, judgePersistence, judgeTwoTabs, readView, swapId, type Family, type PageView } from '../verifier/behavior.ts';
+import { CLICK_ROLES, controlFor, fieldValue, fillAndSubmit, saveField, submitWithInterruption, newReplaySessions, recordIdsInUrl, replayScenario, scenarioDefect, scenarioHash, type Setup, type AuthRecipe, type Oracle, type ReplayEnv, type Scenario, type TraceStep } from '../verifier/scenario.ts';
+import { CLAIM_RETRY_DELAYS_MS, CLAIM_WINDOW_MS, NUMBER_ASSUMPTIONS, claimVisible, distinctiveValues, judgeCrossActor, judgeDifferential, judgeInterruption, judgeInvariant, occurrences, judgePersistence, judgeTwoTabs, readTables, readView, swapId, type ContextControls, type Family, type Interruption, type Invariant, type InvariantVerdict, type PageView } from '../verifier/behavior.ts';
 
 export type ExecuteDeps = {
   db: Db;
@@ -354,6 +354,8 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
     const m = typed.get(path) ?? new Map<string, string>(); m.set(label, value); typed.set(path, m);
   };
   let lastWrite: LastWrite | null = null;
+  // Family 3 invariants registered by check_invariant, re-checked after each later action on their page.
+  const watched = new Map<string, Watched>();
   const noteSubmit = async (path: string, label: string | null, submitSeq: number | undefined) => {
     const values = typed.get(path);
     if (!label || !values?.size) return;
@@ -567,6 +569,7 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
     if (dialogs.length) await ev('dialog.dismissed', { seq: mySeq, dialogs });
     const o = await session.observe();
     const newState = await recordState(o, describe, actionId);
+    if (watched.size) notes.push(...await recheckInvariants(o));
     lastStep = { seq: mySeq, error, notes, scopeBlocked: drained.scopeBlocked, ownScopeBlocked: drained.ownScopeBlocked, dialogs, newState, obs: o, stated: opts.stated };
     const head = `${error ? `#${mySeq} FAILED: ${error}` : `#${mySeq} OK`}${notes.length ? `\n${notes.join('\n')}` : ''}${dialogs.length ? `\nDIALOG (dismissed by Oddhound): ${dialogs.join(' | ')}` : ''}`;
     if (opts.quiet ?? quietSteps) return head;
@@ -771,6 +774,159 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
     });
     await ev('finding.candidate', { title, ruleId: 'B7', kind: 'cross_actor', source: 'agent', family: 'two_actors' });
     return `Cross-actor check FAILED: ${v.detail}.${offered} Recorded as a candidate${v.privacyEstablished ? '' : ' for review (privacy not established)'}; Oddhound will replay it with two fresh accounts. You are actor A again.${afterCheck()}`;
+  };
+
+  /** Family 4: the form the model just filled, submitted by Oddhound with an ordinary interruption; code counts the records. */
+  const checkInterruption = async (args: { kind: Exclude<Interruption, 'none'>; submit: string; field: string; list_path: string; rule_id?: string }): Promise<string> => {
+    if (!writesPermitted(contract) || !contract.capabilities.repeatSubmission) return 'Repeated or interrupted submits are not permitted by this run contract.';
+    const o = session.lastObservation;
+    if (!o) return 'Observe the page first.';
+    const formUrl = new URL(o.url);
+    const values = typed.get(formUrl.pathname);
+    if (!values?.size) return 'Fill the form on this page first (do not submit it), then call check_interruption.';
+    const label = closestLabel(args.field, new Set(values.keys()));
+    const value = values.get(label);
+    if (value === undefined) return `"${args.field}" was not filled on this page. Filled here: ${[...values.keys()].map((k) => JSON.stringify(k)).join(', ')}.`;
+    if (!distinctiveValues({ [label]: value }).length) return `"${label}" must hold distinctive free text (e.g. "Retry check 4K"), so Oddhound can count the records it creates.`;
+    const refusal = pathRefusal(args.list_path);
+    if (refusal) return `list_path ${args.list_path} is ${refusal}.`;
+    const hit = findByLabel(o.elements, 'click', args.submit);
+    const button = 'ref' in hit ? o.elements.find((e) => e.ref === hit.ref) : undefined;
+    if (!button || button.kind !== 'button') return `No submit button "${args.submit}" on this page.`;
+    const form = { path: `${formUrl.pathname}${formUrl.search}`, fields: Object.fromEntries(values), submit: button.label };
+    const count = async (why: string) => { await openPath(args.list_path, why); return occurrences((await view()).text, value); };
+    await ev('scenario.started', { family: 'interruption', kind: args.kind, form: form.path, list: args.list_path });
+    const before = await count('Interruption check, records before');
+    await openPath(form.path, 'Interruption check, reopened the form');
+    let claimedWhileOffline = false;
+    await runBrowserAction('interrupt', { kind: args.kind, fields: Object.keys(form.fields), submit: form.submit }, `Filled the form and submitted it with an interruption (${args.kind.replace(/_/g, ' ')})`,
+      async () => { claimedWhileOffline = (await submitWithInterruption(await session.page(), form, {}, args.kind)).claimedWhileOffline; }, { quiet: true });
+    const failure = (lastStep as StepInfo | null)?.error;
+    if (failure) return `The interrupted submit could not run: ${failure}.${afterCheck()}`;
+    const afterInterruption = await count('Interruption check, records after');
+    let afterRetry: number | undefined;
+    if (afterInterruption === before) {
+      await openPath(form.path, 'Interruption check, back to the form to retry');
+      await runBrowserAction('interrupt', { kind: 'none', fields: Object.keys(form.fields), submit: form.submit }, 'Submitted the form again normally (one retry)',
+        async () => { await submitWithInterruption(await session.page(), form, {}, 'none'); }, { quiet: true });
+      afterRetry = await count('Interruption check, records after the retry');
+    }
+    const v = judgeInterruption({ kind: args.kind, before, afterInterruption, afterRetry, claimedWhileOffline });
+    await ev('scenario.finished', { family: 'interruption', kind: args.kind, outcome: v.outcome, before, afterInterruption, afterRetry: afterRetry ?? null, claimedWhileOffline, created: v.created });
+    if (v.outcome !== 'failed') return `Interruption check ${v.outcome}: ${v.detail}.${v.outcome === 'passed' ? ' No finding.' : ''}${afterCheck()}`;
+    const explicit = contract.rules.find((r) => r.id === args.rule_id && r.source !== 'baseline');
+    const scenario: Scenario = {
+      kind: 'interruption', device: session.device, ...(recorded.auth ? { auth: recorded.auth } : {}),
+      form: { path: form.path, fields: Object.fromEntries(Object.entries(form.fields).map(([k, x]) => [k, asTemplateValue(x)])), submit: form.submit },
+      listPath: args.list_path, value: asTemplateValue(value), interruption: args.kind,
+    };
+    const title = v.created > 1
+      ? `${args.kind === 'double_submit' ? `Pressing "${form.submit}" twice` : `Interrupting "${form.submit}" (${args.kind.replace(/_/g, ' ')})`} creates ${v.created} records`
+      : `The page reports success offline, but nothing is saved (${formUrl.pathname})`;
+    candidates.push({
+      title: title.slice(0, 140), ruleId: explicit?.id ?? 'interruption', impact: 'medium', observed: `${v.detail}.`.slice(0, 500), scenario, actor: session.actor, device: session.device, source: 'agent', family: 'interruption',
+      ...(explicit ? {} : { hypothesis: 'One user\'s interrupted submit was expected to create at most one record and never to report a save that did not happen; no explicit or owner-approved rule says so.' }),
+      contexts: `actor ${session.actor}, ${session.device}; control: the same form submitted once, normally`,
+      limitations: `Records were counted by how often the submitted "${label}" text appears on ${args.list_path}.${args.kind === 'offline_submit' ? ' Offline was simulated in the browser (context.setOffline): a client condition, not proof of server behaviour under a real network failure.' : ''}`,
+    });
+    await ev('finding.candidate', { title, ruleId: explicit?.id ?? null, kind: 'interruption', source: 'agent', family: 'interruption' });
+    return `Interruption check FAILED: ${v.detail}. Recorded as a candidate${explicit ? ` against ${explicit.id}` : ' for review (no explicit rule)'}; Oddhound will replay it next to a normal single submit.${afterCheck()}`;
+  };
+
+  /** Family 5: the same page for the same account on desktop and on a phone; code compares the page's own actions. */
+  const checkDifferential = async (args: { path: string; controls?: string[]; rule_id?: string }): Promise<string> => {
+    const refusal = pathRefusal(args.path);
+    if (refusal) return `${args.path} is ${refusal}.`;
+    if (!contract.devices.includes('mobile') || !contract.devices.includes('desktop')) return 'This run does not enable both the desktop and the mobile profile.';
+    const startDevice = session.device;
+    const read = async (device: 'desktop' | 'mobile'): Promise<ContextControls> => {
+      if (session.device !== device) await runBrowserAction('set_device', { device }, `Switched to ${device}`, async () => { await session.setDevice(device); }, { quiet: true });
+      await openPath(args.path, `Differential check on ${device}`);
+      const o = session.lastObservation!;
+      const controls = o.elements
+        .filter((e) => !e.region && (e.kind === 'button' || e.kind === 'link') && !e.disabled && e.label)
+        .map((e) => ({ label: e.label, role: e.kind as 'button' | 'link', covered: Boolean(e.coveredBy) }));
+      return { context: device === 'mobile' ? 'a 390x844 phone' : 'desktop', controls, errors: o.errors };
+    };
+    await ev('scenario.started', { family: 'differential', compare: 'desktop_vs_mobile', path: args.path });
+    const desk = await read('desktop');
+    const phone = await read('mobile');
+    if (session.device !== startDevice) await runBrowserAction('set_device', { device: startDevice }, `Switched to ${startDevice}`, async () => { await session.setDevice(startDevice); }, { quiet: true });
+    const v = judgeDifferential(desk, phone, args.controls);
+    await ev('scenario.finished', { family: 'differential', compare: 'desktop_vs_mobile', outcome: v.outcome, path: args.path, missing: v.missing, errorsOnlyIn: v.errorsOnlyIn });
+    if (v.outcome !== 'failed') return `Differential check ${v.outcome}: ${v.detail}.${v.outcome === 'passed' ? ' No finding.' : ''}${afterCheck()}`;
+    const absent = v.missing.filter((m) => m.why === 'absent');
+    const others = [...v.missing.filter((m) => m.why === 'covered').map((m) => `"${m.label}" is covered on the phone (report it as mobile_reachability)`), ...v.errorsOnlyIn.map((e) => `an error only the phone shows: ${JSON.stringify(e.slice(0, 80))}`)];
+    if (!absent.length) return `Differences seen, but none is a missing control: ${others.join('; ')}. No candidate recorded.${afterCheck()}`;
+    const mine = [...(recorded.creators?.entries() ?? [])].filter(([, c]) => c.actor === session.actor).map(([id]) => id);
+    const id = recordIdsInUrl(new URL(args.path, session.origin).toString()).find((x) => mine.includes(x));
+    const explicit = contract.rules.find((r) => r.id === args.rule_id && r.source !== 'baseline');
+    const scenario: Scenario = {
+      kind: 'differential', device: 'desktop', ...(recorded.auth ? { auth: recorded.auth } : {}), ...(id ? { setup: recorded.createdBy!.get(id)! } : {}),
+      path: id ? swapId(args.path, id, '{id}') : args.path, compare: 'desktop_vs_mobile', controls: absent.slice(0, 6).map((m) => ({ label: m.label, role: m.role })),
+    };
+    const route = routePattern(new URL(args.path, session.origin).toString());
+    const title = `${absent.map((m) => `"${m.label}"`).join(', ')} ${absent.length === 1 ? 'is' : 'are'} missing on a phone at ${route}`;
+    candidates.push({
+      title: title.slice(0, 140), ruleId: explicit?.id ?? 'differential', impact: 'medium', observed: `${v.detail}.`.slice(0, 500), scenario, actor: session.actor, device: 'desktop+mobile', source: 'agent', family: 'differential',
+      ...(explicit ? {} : { hypothesis: 'The phone layout was expected to offer the same actions as desktop. A phone layout may move an action into a menu on purpose; no explicit or owner-approved rule says they must match.' }),
+      contexts: `actor ${session.actor} on desktop (1440x900) and on a phone (390x844), same account`,
+      limitations: 'Only controls in the page\'s main content were compared (menus and headers legitimately collapse on phones); digits in labels were ignored. A control moved into a menu on the phone counts as missing.',
+    });
+    await ev('finding.candidate', { title, ruleId: explicit?.id ?? null, kind: 'differential', source: 'agent', family: 'differential' });
+    return `Differential check FAILED: ${v.detail}.${others.length ? ` Also: ${others.join('; ')}.` : ''} Recorded as a candidate${explicit ? ` against ${explicit.id}` : ' for review (no explicit rule says the layouts must match)'}.${afterCheck()}`;
+  };
+
+  /** Family 3: invariants the model proposed, re-checked by code after every later step on their page. */
+  type Watched = { route: string; path: string; actor: string; device: 'desktop' | 'mobile'; inv: Invariant; evidence: string; explicit?: { id: string }; failed: boolean };
+  const judgeHere = async (w: Watched): Promise<InvariantVerdict> => judgeInvariant(w.inv, { text: (await view()).text, tables: await readTables(await session.page()) });
+  const invariantCandidate = async (w: Watched, v: InvariantVerdict, when: string) => {
+    w.failed = true;
+    const mine = [...(recorded.creators?.entries() ?? [])].filter(([, c]) => c.actor === w.actor).map(([id]) => id);
+    const inPath = recordIdsInUrl(new URL(w.path, session.origin).toString()).find((id) => mine.includes(id));
+    // Recreate the run's own records the page summarises; a record named in the path is created last, as {id}.
+    const ids = [...mine.filter((id) => id !== inPath).slice(-3), ...(inPath ? [inPath] : [])];
+    const scenario: Scenario = {
+      kind: 'invariant', device: w.device, ...(recorded.auth ? { auth: recorded.auth } : {}), setups: ids.map((id) => recorded.createdBy!.get(id)!),
+      path: inPath ? swapId(w.path, inPath, '{id}') : w.path, invariant: w.inv,
+    };
+    const title = w.inv.kind === 'sum' ? `"${w.inv.total}" does not equal the sum of the "${w.inv.column}" values on ${w.route}` : `"${w.inv.total}" does not match the number of rows on ${w.route}`;
+    candidates.push({
+      title: title.slice(0, 140), ruleId: w.explicit?.id ?? 'invariant', impact: 'medium', observed: `${when}: ${v.detail}.`.slice(0, 500), scenario, actor: w.actor, device: w.device, source: 'agent', family: 'invariant',
+      ...(w.explicit ? {} : { hypothesis: `An invariant the model proposed from the page, not stated by the page or the owner: ${w.evidence}` }),
+      contexts: `actor ${w.actor}, ${w.device}; numbers parsed by Oddhound from the page`,
+      limitations: `${NUMBER_ASSUMPTIONS} Only what the page displays was compared; a charge, discount or row the page does not show would change the expected value. The replay recreates up to ${ids.length} of this run's own records first.`,
+    });
+    await ev('finding.candidate', { title, ruleId: w.explicit?.id ?? null, kind: 'invariant', source: 'agent', family: 'invariant' });
+  };
+  /** After each action: re-check the invariants registered for the page it ended on. Returns notes for the model. */
+  const recheckInvariants = async (o: Observation): Promise<string[]> => {
+    const notes: string[] = [];
+    for (const w of watched.values()) {
+      if (w.failed || w.actor !== session.actor || w.device !== session.device || routePattern(o.url) !== w.route) continue;
+      const v = await judgeHere(w);
+      if (v.outcome !== 'failed') continue;
+      await ev('scenario.finished', { family: 'invariant', outcome: 'failed', route: w.route, invariant: w.inv, values: v.values, after: 'a later step' });
+      await invariantCandidate(w, v, 'After a later step');
+      notes.push(`ODDHOUND INVARIANT BROKEN on ${w.route}: ${v.detail}. Recorded for replay${w.explicit ? '' : ' (for review: no explicit rule)'}.`);
+    }
+    return notes;
+  };
+  const checkInvariant = async (args: { kind: 'sum' | 'count'; total_label: string; column?: string; evidence: string; rule_id?: string }): Promise<string> => {
+    const o = session.lastObservation;
+    if (!o) return 'Observe the page first.';
+    if (args.kind === 'sum' && !args.column) return 'A sum needs column: the table column whose values should add up to the total.';
+    const inv: Invariant = args.kind === 'sum' ? { kind: 'sum', total: args.total_label, column: args.column! } : { kind: 'count', total: args.total_label, ...(args.column ? { column: args.column } : {}) };
+    const explicit = contract.rules.find((r) => r.id === args.rule_id && r.source !== 'baseline');
+    const u = new URL(o.url);
+    const w: Watched = { route: routePattern(o.url), path: `${u.pathname}${u.search}`, actor: session.actor, device: session.device, inv, evidence: args.evidence, ...(explicit ? { explicit: { id: explicit.id } } : {}), failed: false };
+    const v = await judgeHere(w);
+    await ev('scenario.finished', { family: 'invariant', outcome: v.outcome, route: w.route, invariant: inv, values: v.values, rule: explicit?.id ?? null });
+    if (v.outcome === 'inconclusive') return `Cannot check that invariant here: ${v.detail}. Not registered.`;
+    watched.set(`${w.route}|${JSON.stringify(inv)}|${w.actor}|${w.device}`, w);
+    if (v.outcome === 'passed') return `Invariant holds: ${v.detail}. Oddhound re-checks it after every later step on ${w.route}.${afterCheck()}`;
+    await invariantCandidate(w, v, 'When first checked');
+    return `Invariant BROKEN: ${v.detail}. Recorded as a candidate${explicit ? ` against ${explicit.id}` : ' for review (no explicit rule; cite an owner rule in rule_id when one states it)'}.${afterCheck()}`;
   };
 
   /** Family 2 (same actor, two tabs): a save from an out-of-date tab must not silently undo the other tab's. */
@@ -1015,9 +1171,15 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
         return { text: await checkCrossActor(args as { path: string; try_controls?: string[] }) };
       case 'check_two_tabs':
         return { text: await checkTwoTabs(args as Parameters<typeof checkTwoTabs>[0]) };
+      case 'check_invariant':
+        return { text: await checkInvariant(args as Parameters<typeof checkInvariant>[0]) };
+      case 'check_differential':
+        return { text: await checkDifferential(args as Parameters<typeof checkDifferential>[0]) };
+      case 'check_interruption':
+        return { text: await checkInterruption(args as Parameters<typeof checkInterruption>[0]) };
       case 'report_candidate': {
-        if (args.scenario.kind === 'claim_check' || args.scenario.kind === 'cross_actor' || args.scenario.kind === 'two_tab') {
-          const tool = ({ claim_check: 'check_claim', cross_actor: 'check_cross_actor', two_tab: 'check_two_tabs' } as Record<string, string>)[args.scenario.kind as string];
+        if (args.scenario.kind === 'claim_check' || args.scenario.kind === 'cross_actor' || args.scenario.kind === 'two_tab' || args.scenario.kind === 'invariant' || args.scenario.kind === 'differential' || args.scenario.kind === 'interruption') {
+          const tool = ({ claim_check: 'check_claim', cross_actor: 'check_cross_actor', two_tab: 'check_two_tabs', invariant: 'check_invariant', differential: 'check_differential', interruption: 'check_interruption' } as Record<string, string>)[args.scenario.kind as string];
           return { text: `Do not write ${args.scenario.kind} scenarios yourself: call ${tool}; Oddhound records the candidate from what it observes.` };
         }
         if (args.scenario.kind === 'batch' && 'steps' in args.scenario) {
@@ -1345,7 +1507,7 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
 }
 
 /** Browser actions Oddhound takes itself for a behavioral check (ledgered like the model's own). */
-type InternalTool = 'sign_up_actor' | 'second_tab';
+type InternalTool = 'sign_up_actor' | 'second_tab' | 'interrupt';
 
 class LimitReached extends Error { readonly reason: string; constructor(reason: string) { super(reason); this.reason = reason; } }
 

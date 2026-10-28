@@ -171,6 +171,9 @@ export const DEMO_TARGET_RULES: Rule[] = [
   { id: 'R4', text: 'A signed-in user can only see their own bookings.', source: 'demo_target' },
   { id: 'R5', text: 'The booking form must be usable on a phone: the submit button must be reachable and not covered.', source: 'demo_target' },
   { id: 'R6', text: 'Saving a booking from an out-of-date page must not silently undo a change saved from another tab: the save is refused with a message, or both changes are kept.', source: 'demo_target' },
+  { id: 'R7', text: 'On My bookings, "Total guests" equals the sum of the Party column.', source: 'demo_target' },
+  { id: 'R8', text: 'Every action on a booking\'s page that is available on desktop is also available on a phone.', source: 'demo_target' },
+  { id: 'R9', text: 'Pressing "Book table" twice, reloading, or losing the connection while a booking is saved creates one booking, not two, and never shows a booking as confirmed that was not saved.', source: 'demo_target' },
 ];
 
 export function demoTargetContract(origin: string, now = new Date()): RunContract {

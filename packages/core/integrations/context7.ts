@@ -50,5 +50,9 @@ export function topicFor(kind: string): string {
   if (kind === 'form_rule') return 'server-side validation of form input in request handlers';
   if (kind === 'cross_account_read' || kind === 'cross_actor') return 'authorization: restrict records to their owner in data access';
   if (kind === 'claim_check') return 'persisting form updates: save every submitted field before reporting success';
+  if (kind === 'two_tab') return 'optimistic concurrency control: reject stale updates with a version field';
+  if (kind === 'invariant') return 'computing aggregate totals from the same records a page lists';
+  if (kind === 'differential') return 'responsive layout: keep actions visible on small screens';
+  if (kind === 'interruption') return 'idempotent form submission: prevent duplicate records from repeated requests';
   return 'responsive layout: fixed elements covering content on small screens';
 }

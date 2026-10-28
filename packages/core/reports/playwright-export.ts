@@ -138,6 +138,31 @@ ${s.controls.map((c) => `  { const before = await page.locator('body').innerText
 `;
 }
 
+type InvariantScenario = Extract<Scenario, { kind: 'invariant' }>;
+
+/** Family 3: recreate the records, open the page, parse the numbers and compare (same reading rules as Oddhound). */
+function invariantBody(s: InvariantScenario, signedIn: boolean): string {
+  const inv = s.invariant;
+  return `  const vars: Record<string, string> = ${signedIn ? '{ ...who, marker }' : '{ ...identity(), marker }'};
+${s.setups.map((st) => `  await submitForm(page, ${j(st.path)}, ${j(st.fields)}, ${j(st.submit)}, vars);
+  { const u = new URL(page.url()); vars.id = [...u.pathname.split('/'), ...u.searchParams.values()].find((v) => /^\\d+$/.test(v)) ?? ''; }
+`).join('')}  await page.goto(new URL(fill(${j(s.path)}, vars), BASE_URL).toString());
+  const num = (t: string) => { const m = t.replace(/(\\d),(?=\\d{3}\\b)/g, '$1').match(/-?\\d+(?:\\.\\d+)?/g); return m && m.length === 1 ? Number(m[0]) : NaN; };
+  const text = await page.locator('body').innerText();
+  const label = ${j(inv.total)}.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\$&');
+  const total = num(new RegExp(label + '\\\\s*[:=]?\\\\s*([^\\\\s\\\\d-]{0,3}\\\\s?-?[\\\\d.,]+)', 'i').exec(text)?.[1] ?? '');
+  const table = page.locator('table').first();
+  const rows = (await table.locator('tbody tr').allInnerTexts()).filter((r) => !r.toLowerCase().includes(${j(inv.total.toLowerCase())}));
+${inv.kind === 'sum' ? `  const headers = (await table.locator('thead th').allInnerTexts()).map((h) => h.trim().toLowerCase());
+  const col = headers.findIndex((h) => h.includes(${j(inv.column.toLowerCase())}));
+  const parts = await Promise.all(rows.map((_, i) => table.locator('tbody tr').nth(i).locator('td').nth(col).innerText()));
+  // Rule: the total equals the sum of the column (to the cent).
+  expect(Math.abs(parts.map(num).reduce((a, b) => a + b, 0) - total)).toBeLessThan(0.005);
+` : `  // Rule: the count equals the number of rows.
+  expect(rows.length).toBe(total);
+`}`;
+}
+
 type TwoTab = Extract<Scenario, { kind: 'two_tab' }>;
 
 /** Family 2 (two tabs): an out-of-date tab's save must not silently undo the other tab's change. */
@@ -220,6 +245,37 @@ async function submitForm(page: Page, path: string, fields: Record<string, strin
     body = `${auth}${crossActorBody(s)}`;
   } else if (s.kind === 'two_tab') {
     body = `${auth}${twoTabBody(s, Boolean(auth))}`;
+  } else if (s.kind === 'invariant') {
+    body = `${auth}${invariantBody(s, Boolean(auth))}`;
+  } else if (s.kind === 'interruption') {
+    const press = s.interruption === 'double_submit' ? '  const box = (await submit.boundingBox())!;\n  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);\n  await page.waitForTimeout(250);\n  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);\n'
+      : s.interruption === 'offline_submit' ? '  await page.context().setOffline(true);\n  await submit.click({ noWaitAfter: true }).catch(() => {});\n  await page.waitForTimeout(1500);\n  const claimedOffline = await page.locator(\'[role=status]:visible, .notice:visible\').count() > 0;\n  await page.context().setOffline(false);\n  expect(claimedOffline, \'no success message while offline\').toBe(false);\n'
+        : s.interruption === 'reload_after_submit' ? '  await submit.click({ noWaitAfter: true });\n  await page.waitForTimeout(150);\n  await page.reload().catch(() => {});\n' : '  await submit.click();\n';
+    body = `${auth}  const vars: Record<string, string> = ${auth ? '{ ...who, marker }' : '{ ...identity(), marker }'};
+  const value = fill(${j(s.value)}, vars).toLowerCase();
+  const count = async () => { await page.goto(new URL(fill(${j(s.listPath)}, vars), BASE_URL).toString()); return (await page.locator('body').innerText()).toLowerCase().split(value).length - 1; };
+  const before = await count();
+  await page.goto(new URL(fill(${j(s.form.path)}, vars), BASE_URL).toString());
+  for (const [k, v] of Object.entries(${j(s.form.fields)})) await (await field(page, k)).fill(fill(v, vars));
+  const submit = page.getByRole('button', { name: ${j(s.form.submit)} }).first();
+${press}  await page.waitForTimeout(1500);
+  let after = await count();
+  if (after === before) { await submitForm(page, ${j(s.form.path)}, ${j(s.form.fields)}, ${j(s.form.submit)}, vars); after = await count(); }
+  // Rule: one interrupted submit (plus at most one retry) creates exactly one record.
+  expect(after - before).toBe(1);
+`;
+  } else if (s.kind === 'differential') {
+    body = `${auth}  const vars: Record<string, string> = ${auth ? '{ ...who, marker }' : '{ ...identity(), marker }'};
+${setupLines(s).join('\n')}
+  const recordUrl = new URL(fill(${j(s.path)}, vars), BASE_URL).toString();
+  const controls = ${j(s.controls)} as { label: string; role: 'button' | 'link' }[];
+  await page.goto(recordUrl);
+  for (const c of controls) await expect(page.getByRole(c.role, { name: c.label, exact: true }).first()).toBeVisible(); // desktop
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(recordUrl);
+  // Rule: each control usable on desktop is visible on a phone too.
+  for (const c of controls) await expect(page.getByRole(c.role, { name: c.label, exact: true }).first()).toBeVisible();
+`;
   } else {
     body = `${auth}  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(new URL(${j(s.path)}, BASE_URL).toString());

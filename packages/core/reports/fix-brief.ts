@@ -65,6 +65,23 @@ function reproduction(s: Scenario): string[] {
     if (s.listPath) steps.push(`As the second account, open \`${s.listPath}\`: the first account's record is not listed there.`);
     steps.push(`As the second account, open exactly \`${s.path}\`.${s.controls.length ? ` Press ${s.controls.map((c) => `"${c.target}"`).join(', ')}, then reopen it as the first account.` : ''}`);
     steps.push(`Check: the second account does not see the first account's ${s.protect.map((f) => `"${f}"`).join(', ')}${s.controls.length ? ', and the first account\'s record is unchanged' : ''}.`);
+  } else if (s.kind === 'interruption') {
+    steps.push(`Open \`${s.listPath}\` and note how often ${JSON.stringify(s.value)} appears.`);
+    steps.push(`Open \`${s.form.path}\` and fill: ${Object.entries(s.form.fields).map(([k, v]) => `${k} = ${JSON.stringify(v)}`).join('; ')}.`);
+    steps.push(s.interruption === 'double_submit' ? `Press "${s.form.submit}", then press it again 0.25 s later.`
+      : s.interruption === 'offline_submit' ? `Go offline, press "${s.form.submit}", wait 1.5 s, then go back online.`
+        : s.interruption === 'reload_after_submit' ? `Press "${s.form.submit}" and reload the page straight away.` : `Press "${s.form.submit}" once.`);
+    steps.push(`If nothing was saved, submit the form once more normally. Check: \`${s.listPath}\` shows exactly one new ${JSON.stringify(s.value)}, and no success message appeared while offline.`);
+  } else if (s.kind === 'differential') {
+    if (s.setup) steps.push(setupText(s.setup));
+    steps.push(`Open \`${s.path}\` on desktop (1440x900): ${s.controls.map((c) => `${c.role} "${c.label}"`).join(', ')} ${s.controls.length === 1 ? 'is' : 'are'} visible.`);
+    steps.push(`Open the same page with the same account on a 390x844 phone. Check: ${s.controls.map((c) => `"${c.label}"`).join(', ')} ${s.controls.length === 1 ? 'is' : 'are'} visible there too.`);
+  } else if (s.kind === 'invariant') {
+    for (const st of s.setups) steps.push(setupText(st));
+    steps.push(`Open \`${s.path}\`.`);
+    steps.push(s.invariant.kind === 'sum'
+      ? `Check: the number after "${s.invariant.total}" equals the sum of the "${s.invariant.column}" column.`
+      : `Check: the number after "${s.invariant.total}" equals the number of rows in the table.`);
   } else if (s.kind === 'two_tab') {
     steps.push(setupText(s.setup));
     steps.push(s.sequential ? `Open \`${s.path}\` in one tab.` : `Open \`${s.path}\` in two browser tabs.`);
@@ -151,6 +168,9 @@ export function fixBriefMarkdown(b: BriefInput): string {
   lines.push('- Oddhound did not read your source code. Locate the handler that processes the request above; the cause has not been confirmed.');
   if (b.scenario?.assertion.kind === 'form_rule') lines.push('- Likely area: server-side validation for this form. Client-side attributes (min/max/required) are not enough on their own.');
   if (b.scenario?.assertion.kind === 'cross_account_read' || b.scenario?.assertion.kind === 'cross_actor') lines.push('- Likely area: the record lookup (or the action handler) does not check that the record belongs to the signed-in user (object-level authorization).');
+  if (b.scenario?.assertion.kind === 'interruption') lines.push('- Likely area: the create handler has no protection against a repeated request. Disable the button while submitting and make the server idempotent (for example a one-time form token).');
+  if (b.scenario?.assertion.kind === 'differential') lines.push('- Likely area: a narrow-screen style or component that hides the control (for example a media query with display: none). Keep the action reachable on phones, in place or in a visible menu.');
+  if (b.scenario?.assertion.kind === 'invariant') lines.push('- Likely area: the code that computes the summary value (a filter, an off-by-one, or a stale cached total). Compute it from the same records the page lists.');
   if (b.scenario?.assertion.kind === 'two_tab') lines.push('- Likely area: the edit form posts every field, so a save from an out-of-date page overwrites newer values. Send a version (or updated-at) with the form and refuse or merge a stale save.');
   if (b.scenario?.assertion.kind === 'claim_check') lines.push('- Likely area: the save handler reports success before (or without) persisting every submitted field; check that each field above is written and that the success message is only shown after the write succeeds.');
   if (b.scenario?.assertion.kind === 'mobile_reachability') lines.push('- Likely area: a fixed or overlaying element on narrow screens; reserve space for it or let users dismiss it.');
