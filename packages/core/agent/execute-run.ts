@@ -181,6 +181,9 @@ export async function executeRun(deps: ExecuteDeps, runId: string): Promise<RunS
       await setRunStatus(db, runId, generation, 'waiting_for_input');
       await ev('run.status', { status: 'waiting_for_input', reason: 'owner_sign_in' });
       handoffState = await runHandoff({ db, runId, generation, session, startPath: contract.handoff.startPath, ev, signal: abort.signal });
+      // Time spent waiting for the owner to sign in is not testing time: the run's clock starts again at handover.
+      await db.query(`UPDATE runs SET expires_at = now() + ($3::int * interval '1 millisecond') WHERE id = $1 AND lease_generation = $2`, [runId, generation, LIMITS.runWallClockMs]);
+      await ev('run.clock_started', { minutes: LIMITS.runWallClockMs / 60_000, after: 'owner_handover' });
       await setRunStatus(db, runId, generation, 'running');
       await ev('run.status', { status: 'running' });
     }
@@ -353,10 +356,14 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
   };
   let lastStep: StepInfo | null = null;
   const batches = new Map<number, BatchRecord>();
-  // Batch steps that failed, by page path + tool + control label. A batch that tries the same step after it has
-  // already failed twice is refused before it runs, so the agent changes approach instead of looping.
+  // Batch steps that failed, by page state (route, headings, controls such as an open dialog, and field values) +
+  // tool + control label. A step that already failed twice in the same state is not run again, so the agent changes
+  // the page (closes the dialog, fills the field) or moves on instead of looping. A different state may retry it.
   const failedSteps = new Map<string, { count: number; seq: number; error: string }>();
-  const stepKey = (path: string, tool: string, label: string | undefined) => `${path}|${tool}|${(label ?? '').trim().toLowerCase()}`;
+  const stepKey = (o: Observation, tool: string, label: string | undefined) => {
+    const values = o.elements.filter((e) => e.value !== undefined).map((e) => `${e.label}=${e.value}`).sort().join('&');
+    return `${stateFingerprint(o, session.actor, session.device).fingerprint}|${values}|${tool}|${(label ?? '').trim().toLowerCase()}`;
+  };
   // Pages first reached after the latest plan update, shown in the status line so the plan grows with what is found.
   const pagesSincePlan = new Set<string>();
   let lastCoverage = '';
@@ -612,15 +619,7 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
         const modelObs = session.turnObservation;
         if (!modelObs) return { text: 'Observe the page first.' };
         const steps = args.steps as BatchStep[];
-        const planPath = new URL(modelObs.url).pathname;
         const labelOfStep = (st: Record<string, any>) => typeof st.label === 'string' ? st.label : modelObs.elements.find((e) => e.ref === st.ref)?.label;
-        for (const [i, st] of steps.entries()) {
-          const prior = failedSteps.get(stepKey(planPath, st.tool, labelOfStep(st)));
-          if (prior && prior.count >= 2) {
-            await ev('batch.refused', { step: i + 1, tool: st.tool, label: labelOfStep(st) ?? null, failures: prior.count });
-            return { text: `Batch not run: step ${i + 1} (${st.tool} "${labelOfStep(st) ?? (st as Record<string, any>).ref}") already failed ${prior.count} times on ${planPath}, last at #${prior.seq}: ${prior.error}. Do not retry it. Record what that tells you (with report_candidate if it breaks a rule, or a plan_tests note), then test something else.` };
-          }
-        }
         const no = batches.size + 1;
         const rec: BatchRecord = { no, goal: args.goal, steps: [] };
         batches.set(no, rec);
@@ -672,6 +671,14 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
             }
             if (refError) { surprise = 'stale element'; lines.push(`step ${i + 1} ${tool}: not run (${refError})`); break; }
             const pathBefore = new URL((await session.page()).url()).pathname;
+            const failKey = stepKey(session.lastObservation ?? modelObs, tool, labelOfStep(st as Record<string, any>));
+            const prior = failedSteps.get(failKey);
+            if (prior && prior.count >= 2) {
+              surprise = 'a step that keeps failing here';
+              await ev('batch.refused', { batch: no, step: i + 1, tool, label: labelOfStep(st as Record<string, any>) ?? null, failures: prior.count });
+              lines.push(`step ${i + 1} ${tool} "${labelOfStep(st as Record<string, any>) ?? ''}": not run: it already failed ${prior.count} times with the page exactly like this (last #${prior.seq}: ${prior.error}). Change the page first (close the dialog, fill the required field) or test something else.`);
+              break;
+            }
             lastStep = null;
             const out = await dispatch({ id: `${call.id}:b${i}`, type: 'function', function: { name: tool, arguments: JSON.stringify(callArgs) } } as ToolCall);
             const info = lastStep as StepInfo | null;
@@ -681,8 +688,7 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
             let line = `step ${i + 1} ${tool} #${info.seq}: ${info.error ? `FAILED: ${info.error}` : 'ok'}${info.stated ? ` (value from stated ${info.stated})` : ''}`;
             if (info.error) {
               surprise = 'a step failed';
-              const k = stepKey(pathBefore, tool, labelOfStep(st as Record<string, any>));
-              failedSteps.set(k, { count: (failedSteps.get(k)?.count ?? 0) + 1, seq: info.seq, error: info.error });
+              failedSteps.set(failKey, { count: (failedSteps.get(failKey)?.count ?? 0) + 1, seq: info.seq, error: info.error });
             }
             if (info.notes.length) { line += ` | ${info.notes.join(' | ')}`; surprise ??= 'Oddhound detected a problem'; }
             if (info.dialogs.length) { line += ` | dialog dismissed: ${info.dialogs.join(' | ')}`; surprise ??= 'a dialog opened'; }

@@ -1,7 +1,7 @@
 // Clicks that cannot happen, through the real worker pipeline (real Chromium, local runtime, egress proxy,
 // scope policy, action ledger in oddhound_test). The model is a SCRIPTED test provider (not Meta inference).
 // Checks: a disabled control and a control under a dialog say why they were not clicked; a batch that repeats a
-// step which already failed twice is refused before it runs; the site's own sitemap reaches the first message.
+// step that already failed twice with the page unchanged is not run again; the site's own sitemap reaches the first message.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
@@ -62,7 +62,7 @@ class ScriptedPlanner implements ChatProvider {
       call('navigate', { path: '/notes' }),
       call('run_scenario_batch', pin),
       call('run_scenario_batch', pin),
-      call('run_scenario_batch', pin), // third try: refused before it runs
+      call('run_scenario_batch', pin), // third try, page unchanged: the click is not run
       call('run_scenario_batch', { goal: 'save under the dialog', steps: [{ tool: 'click', label: 'Save' }] }),
       call('finish_run', { summary: 'Tried the notes controls.' }),
     ];
@@ -95,8 +95,8 @@ describe('clicks that cannot happen', () => {
     // Disabled: answered at once, with the reason.
     expect(planner.seen[4]).toMatch(/not clicked: the control is disabled/);
     expect(planner.seen[5]).toMatch(/not clicked: the control is disabled/);
-    // The same failing step a third time is refused, and no browser action is spent on it.
-    expect(planner.seen[6]).toMatch(/Batch not run: step 2 \(click "Pin note"\) already failed 2 times/);
+    // The same failing step a third time, with the page unchanged, is not run (no click is spent on it).
+    expect(planner.seen[6]).toMatch(/step 2 click "Pin note": not run: it already failed 2 times with the page exactly like this/);
     // Covered by a dialog: named, so the agent knows to close it.
     expect(planner.seen[7]).toMatch(/another element is on top of it: a dialog "Library"/);
 
@@ -104,6 +104,6 @@ describe('clicks that cannot happen', () => {
     expect(events.find((e) => e.type === 'site.mapped')?.payload).toMatchObject({ fromSitemap: 2 });
     expect(events.filter((e) => e.type === 'batch.refused')).toHaveLength(1);
     const actions = (await db.query<{ tool: string; state: string }>('SELECT tool, state FROM actions WHERE run_id = $1 ORDER BY seq', [admitted.runId])).rows;
-    expect(actions.map((a) => `${a.tool}:${a.state}`)).toEqual(['navigate:succeeded', 'fill:succeeded', 'click:failed', 'fill:succeeded', 'click:failed', 'click:failed']);
+    expect(actions.map((a) => `${a.tool}:${a.state}`)).toEqual(['navigate:succeeded', 'fill:succeeded', 'click:failed', 'fill:succeeded', 'click:failed', 'fill:succeeded', 'click:failed']);
   }, 120_000);
 });

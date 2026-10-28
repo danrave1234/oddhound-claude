@@ -76,7 +76,9 @@ export function LiveDeck({ snap, active, replay, onOpenBrowser, onOpenFindings }
 
   // ── Live clock ─────────────────────────────────────────────────────────────
   const now = useNow(active && !replay, 1000);
-  const elapsedMs = atEnd ? ((run.finished_at ? endMs : active ? now : endMs) - startMs) : t - startMs;
+  // The testing clock restarts when the owner hands over after signing in (the run's expiry moves then).
+  const clockStartMs = run.expires_at ? Math.max(startMs, new Date(run.expires_at).getTime() - LIMITS.runWallClockMs) : startMs;
+  const elapsedMs = Math.max(0, atEnd ? ((run.finished_at ? endMs : active ? now : endMs) - clockStartMs) : t - clockStartMs);
 
   // ── Derived model at time t ────────────────────────────────────────────────
   const model = useMemo(() => {
