@@ -10,6 +10,28 @@ const useIsoLayout = typeof window === 'undefined' ? useEffect : useLayoutEffect
 
 const short = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
+const isId = (seg: string) => /^\d+$/.test(seg) || /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(seg) || /-[0-9a-f]{6,}$/i.test(seg) || seg.startsWith(':');
+const words = (seg: string) => { const w = seg.replace(/[-_]+/g, ' ').trim(); return w.charAt(0).toUpperCase() + w.slice(1); };
+
+/** A readable name for a page from its address: "/settings/account" -> "Settings › Account", "/notes/42" -> "Notes › one record". */
+export function pageName(route: string): string {
+  const segs = route.split('?')[0]!.split('/').filter(Boolean);
+  if (!segs.length) return 'Home';
+  const named = segs.map((s) => (isId(s) ? 'one record' : words(s)));
+  return named.slice(-2).join(' › ');
+}
+
+/** Consecutive page states on the same address are one stop (a dialog or tab on that page is not a new page). */
+export function trailStops<T extends TrailPage>(pages: T[]): (T & { visits: number })[] {
+  const out: (T & { visits: number })[] = [];
+  for (const p of pages) {
+    const prev = out[out.length - 1];
+    if (prev && prev.route === p.route && prev.device === p.device) prev.visits++;
+    else out.push({ ...p, visits: 1 });
+  }
+  return out;
+}
+
 export function TrailMap({ pages, live }: { pages: TrailPage[]; live: boolean }) {
   const wrap = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(720);
@@ -20,8 +42,9 @@ export function TrailMap({ pages, live }: { pages: TrailPage[]; live: boolean })
     return () => ro.disconnect();
   }, []);
 
-  const hidden = Math.max(0, pages.length - MAX_SHOWN);
-  const shown = pages.slice(hidden);
+  const grouped = useMemo(() => trailStops(pages), [pages]);
+  const hidden = Math.max(0, grouped.length - MAX_SHOWN);
+  const shown = useMemo(() => grouped.slice(hidden), [grouped, hidden]);
   const perRow = Math.max(2, Math.min(7, Math.floor((width - PAD_X * 2) / 128) + 1));
   const gap = perRow > 1 ? (width - PAD_X * 2) / (perRow - 1) : 0;
 
@@ -53,18 +76,18 @@ export function TrailMap({ pages, live }: { pages: TrailPage[]; live: boolean })
 
   return (
     <div className="tmap" ref={wrap}>
-      <ol className="sr-only" aria-label="Pages discovered, in order">{pages.map((p) => <li key={p.key}>{p.title || p.route} ({p.route}, {p.device})</li>)}</ol>
+      <ol className="sr-only" aria-label="Pages discovered, in order">{pages.map((p) => <li key={p.key}>{pageName(p.route)} ({p.route}, {p.device})</li>)}</ol>
       <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden focusable="false">
         <path d={d} className="tmap-path" />
         {stops.map((s, i) => {
           const isLast = i === stops.length - 1;
           return (
             <g key={s.key} transform={`translate(${s.x} ${s.y})`} className={`tmap-stop${isLast ? ' last' : ''}${isLast && live ? ' fresh' : ''}`}>
-              <title>{`${s.title || s.route} — ${s.route}`}</title>
+              <title>{`${pageName(s.route)} — ${s.route}${s.visits > 1 ? ` (${s.visits} states in a row: dialogs, tabs or form changes on this page)` : ''}`}</title>
               <circle r={isLast ? 9 : 6.5} className="tmap-dot" />
               {s.device === 'mobile' && <rect x={-2.5} y={-4} width={5} height={8} rx={1.2} className="tmap-phone" />}
-              <text y={24} textAnchor="middle" className="tmap-title">{short(s.title || s.route, labelChars)}</text>
-              <text y={38} textAnchor="middle" className="tmap-route">{short(s.route, labelChars + 2)}</text>
+              <text y={24} textAnchor="middle" className="tmap-title">{short(pageName(s.route), labelChars)}</text>
+              <text y={38} textAnchor="middle" className="tmap-route">{short(s.visits > 1 ? `${s.route} ×${s.visits}` : s.route, labelChars + 2)}</text>
             </g>
           );
         })}
@@ -82,7 +105,7 @@ export function TrailMap({ pages, live }: { pages: TrailPage[]; live: boolean })
           </g>
         )}
       </svg>
-      {hidden > 0 && <p className="tmap-more">{hidden} earlier {hidden === 1 ? 'page' : 'pages'} not shown</p>}
+      {hidden > 0 && <p className="tmap-more">{hidden} earlier {hidden === 1 ? 'stop' : 'stops'} not shown</p>}
     </div>
   );
 }

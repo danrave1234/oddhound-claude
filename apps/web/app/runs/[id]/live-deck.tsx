@@ -209,7 +209,7 @@ export function LiveDeck({ snap, active, replay, onOpenBrowser, onOpenFindings }
           {/* Counters + sparkline */}
           <div className="deck-foot">
             <div className="counters">
-              <span><Icon name="browser" /><CountUp value={model.pages.length} /> pages</span>
+              <span><Icon name="browser" /><CountUp value={new Set(model.pages.map((pg) => pg.route)).size} /> pages</span>
               <span><Icon name="question" /><CountUp value={model.candidates} /> candidates</span>
               <button type="button" className={model.verified ? 'hot' : ''} onClick={onOpenFindings}><Icon name="bug" /><CountUp value={model.verified} /> verified</button>
               <span><Icon name="sniff" /><CountUp value={model.signals} /> signals</span>
@@ -223,7 +223,7 @@ export function LiveDeck({ snap, active, replay, onOpenBrowser, onOpenFindings }
 
       {/* Discovered pages as a trail map */}
       <div className="trail-wrap">
-        <div className="trail-head"><span className="trail-label">Trail</span><span className="muted" style={{ fontSize: 12.5 }}>{model.pages.length ? `${model.pages.length} ${model.pages.length === 1 ? 'page' : 'pages'} reached, in order` : ''}</span></div>
+        <div className="trail-head"><span className="trail-label">Trail</span><span className="muted" style={{ fontSize: 12.5 }}>{model.pages.length ? (() => { const n = new Set(model.pages.map((pg) => pg.route)).size; return `${n} ${n === 1 ? 'page' : 'pages'} reached, in order (${model.pages.length} page ${model.pages.length === 1 ? 'state' : 'states'})`; })() : ''}</span></div>
         {model.pages.length
           ? <TrailMap pages={model.pages} live={showLiveMotion} />
           : <p className="muted" style={{ fontSize: 13, margin: 0 }}>{active ? 'The trail grows as the agent reaches new pages.' : 'No pages recorded.'}</p>}
