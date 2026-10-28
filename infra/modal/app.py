@@ -18,15 +18,20 @@ import subprocess
 
 import modal
 
-ROOT = pathlib.Path(__file__).resolve().parents[2]
+# Deploy-time settings. Inside a container this file is re-imported from /root, without these variables:
+# everything a process needs is passed through each Function's `env`, fixed when it was deployed.
+ROOT = pathlib.Path(__file__).resolve().parents[2] if modal.is_local() else pathlib.Path("/")
 WORKSPACE = os.environ.get("ODDHOUND_MODAL_WORKSPACE", "")
 BROWSER_IMAGE_ID = os.environ.get("MODAL_BROWSER_IMAGE_ID", "")
 # gVisor cannot install the browser-user firewall (no netfilter netlink; canary Oct 28), so browsers run as VMs.
 SANDBOX_RUNTIME = os.environ.get("MODAL_SANDBOX_RUNTIME", "vm")
 
 
+URL_SUFFIX = os.environ.get("ODDHOUND_MODAL_URL_SUFFIX", "us-east.modal.run")
+
+
 def url(label: str) -> str:
-    return f"https://{WORKSPACE}--{label}.modal.run"
+    return f"https://{WORKSPACE}--{label}.{URL_SUFFIX}"
 
 
 app = modal.App("oddhound")
@@ -72,7 +77,7 @@ COMMON_ENV = {
 
 
 def node(args: list[str], cwd: str, extra_env: dict | None = None, wait: bool = False):
-    env = {**os.environ, **COMMON_ENV, **(extra_env or {}), "HOME": "/home/node"}
+    env = {**os.environ, **(extra_env or {}), "HOME": "/home/node"}
     p = subprocess.Popen(["node", *args], cwd=cwd, env=env, user="node", group="node")
     if wait:
         code = p.wait()
@@ -81,14 +86,14 @@ def node(args: list[str], cwd: str, extra_env: dict | None = None, wait: bool = 
     return p
 
 
-@app.function(image=web_image, secrets=[web_secret], cpu=0.5, memory=1024, min_containers=0, scaledown_window=120, timeout=3600)
+@app.function(image=web_image, secrets=[web_secret], env=COMMON_ENV, cpu=0.5, memory=1024, min_containers=0, scaledown_window=120, timeout=3600)
 @modal.concurrent(max_inputs=50)
 @modal.web_server(8080, startup_timeout=90, label="oddhound-web")
 def web():
     node(["scripts/next-with-env.mjs", "start", "--port", "8080", "--hostname", "0.0.0.0"], cwd="/app/apps/web")
 
 
-@app.function(image=web_image, secrets=[web_secret], cpu=1.0, memory=1024, max_containers=1, timeout=2 * 3600)
+@app.function(image=web_image, secrets=[web_secret], env=COMMON_ENV, cpu=1.0, memory=1024, max_containers=1, timeout=2 * 3600)
 def worker():
     """Drains the Postgres run queue, runs the reapers, and exits after 90 s with no active run."""
     node(["/app/apps/worker/main.ts"], cwd="/app", extra_env={"ODDHOUND_WORKER_IDLE_EXIT_MS": "90000"}, wait=True)
