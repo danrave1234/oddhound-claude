@@ -31,7 +31,7 @@ describe('Modal browser Sandbox parameters', () => {
 
   it('bounds the lifetime by sign-in wait + run clock + finalization, and tags the run for the reaper', () => {
     expect(p.timeoutMs).toBe(MODAL_SANDBOX_TIMEOUT_MS);
-    expect(MODAL_SANDBOX_TIMEOUT_MS).toBe(75 * 60_000); // 10 sign-in + 60 run backstop + 5
+    expect(MODAL_SANDBOX_TIMEOUT_MS).toBe(95 * 60_000); // 30 sign-in + 60 run backstop + 5
     expect(p.tags).toEqual({ 'oddhound-run': 'run-123', 'oddhound-role': 'browser' });
   });
 

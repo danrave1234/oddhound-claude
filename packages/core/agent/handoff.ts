@@ -34,7 +34,7 @@ export class HandoffEnded extends Error {
   constructor(reason: 'handoff_cancelled' | 'handoff_timed_out') { super(reason); this.reason = reason; }
 }
 
-export const HANDOFF_LIMIT_MS = 10 * 60_000;
+export const HANDOFF_LIMIT_MS = 30 * 60_000; // raised from 10 min (Oct 29, owner decision): owners kept missing the window
 const FRAME_EVERY_MS = 600;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

@@ -16,7 +16,7 @@ Code: `packages/core/browser/modal-runtime.ts` (`BROWSER_RUNTIME=modal`), `tests
 | Playwright / Chromium | 1.64.1 (same in worker and image) |
 | Node | 26 (image `node:26-bookworm-slim`; local runs with Node 26.12.1) |
 | Modal | Python client 1.6.3 (deploy/build), JS SDK `modal@0.11.1` (worker, web) |
-| Sandbox profile | `runtime: "vm"`, 1 CPU, 2048 MiB, `timeoutMs` 75 min, connect-token control, public-IPv4 outbound allowlist |
+| Sandbox profile | `runtime: "vm"`, 1 CPU, 2048 MiB, `timeoutMs` 95 min, connect-token control, public-IPv4 outbound allowlist |
 
 ## Canary results
 
@@ -48,7 +48,7 @@ What the deploy profile showed:
 5. **Measured egress bytes:** `egressStats` reports denials only (same as Fly); byte totals stay in the guest proxy.
 
 Unchanged: fresh Sandbox per run, never reused; no volumes; pinned image ID; hard Modal lifetime of
-75 minutes (10-minute sign-in wait + 60-minute run backstop from Oct 28 + 5 minutes; it was 30 with the earlier 15-minute clock); terminate-and-confirm; a reaper
+95 minutes (30-minute sign-in wait from Oct 29 + 60-minute run backstop from Oct 28 + 5 minutes; it was 75 with the 10-minute sign-in wait); terminate-and-confirm; a reaper
 outside the run (each worker start, every 30 s while it runs, at idle exit, and a 15-minute scheduled tick).
 
 ## Deployment on Modal
@@ -93,7 +93,7 @@ are assumed to cost no more. Not yet reconciled against Modal's usage page.
 
 | Item | Estimate |
 |---|---|
-| Browser Sandbox, 1 core + 2 GiB | $0.0000528/s: ~$0.01 for a 4-minute run, $0.05 for a full 15-minute run, $0.24 at the 75-minute hard limit |
+| Browser Sandbox, 1 core + 2 GiB | $0.0000528/s: ~$0.01 for a 4-minute run, $0.05 for a full 15-minute run, $0.30 at the 95-minute hard limit |
 | Worker, 0.5 core + 1 GiB during a run + 90 s idle | ~$0.01 per run |
 | Model (Muse Spark contributor price) | separate, from the Meta credit (run cost shown per run) |
 | **Per run (compute)** | **≈ $0.02–0.06** |
