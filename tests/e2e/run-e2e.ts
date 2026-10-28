@@ -67,14 +67,14 @@ try {
   const status = await executeRun(deps, admitted.runId);
   const runId = admitted.runId;
   const run = (await db.query('SELECT status, stop_reason, sandbox_verdict, browser_state, provider, model FROM runs WHERE id = $1', [runId])).rows[0];
-  const findings = (await db.query('SELECT title, category, verification, lifecycle, rule_id, confidence, observed FROM findings WHERE run_id = $1 ORDER BY category, rule_id', [runId])).rows;
+  const findings = (await db.query('SELECT title, category, verification, lifecycle, rule_id, family, confidence, observed FROM findings WHERE run_id = $1 ORDER BY category, rule_id', [runId])).rows;
   const actions = (await db.query(`SELECT state, count(*)::int AS n FROM actions WHERE run_id = $1 GROUP BY state`, [runId])).rows;
   const events = (await db.query(`SELECT type, count(*)::int AS n FROM run_events WHERE run_id = $1 GROUP BY type ORDER BY type`, [runId])).rows;
   const workflows = (await db.query('SELECT name, status FROM workflows WHERE run_id = $1 ORDER BY updated_at', [runId])).rows;
   const graph = (await db.query('SELECT (SELECT count(*) FROM graph_states WHERE run_id = $1)::int AS states, (SELECT count(*) FROM graph_transitions WHERE run_id = $1)::int AS transitions', [runId])).rows[0];
   const scope = (await db.query(`SELECT payload FROM run_events WHERE run_id = $1 AND type IN ('scope.denied','egress.denied')`, [runId])).rows;
   console.log(JSON.stringify({ run, seconds: Math.round((Date.now() - started) / 1000), actions, workflows, graph }, null, 2));
-  console.table(findings.map((f) => ({ rule: f.rule_id, category: f.category, verification: f.verification, lifecycle: f.lifecycle, title: f.title.slice(0, 60) })));
+  console.table(findings.map((f) => ({ rule: f.rule_id, family: f.family, category: f.category, verification: f.verification, lifecycle: f.lifecycle, title: f.title.slice(0, 60) })));
 
   expect(status === 'completed', `discovery run completed (status=${status}, reason=${run.stop_reason})`);
   expect(run.browser_state === 'terminated', 'browser destroyed and confirmed after the run');
@@ -82,6 +82,22 @@ try {
     expect(findings.some((f) => f.rule_id === rule && f.verification === 'verified' && f.category === 'verified_issue'), `seeded defect for ${rule} found and independently verified`);
   }
   expect(!findings.some((f) => f.rule_id === 'R3' && f.verification === 'verified'), 'past-date control (R3) is not reported as a defect');
+  // Behavioral families (MVP §9): each seeded defect is found and verified; each neighbouring control is not flagged.
+  const verifiedFamily = (rule: string, family: string) => findings.some((f) => f.rule_id === rule && f.family === family && f.verification === 'verified' && f.category === 'verified_issue');
+  expect(verifiedFamily('B11', 'claim_vs_truth'), 'family 1: "Changes saved." while the edited notes were dropped (D6) is found and verified');
+  expect(verifiedFamily('B7', 'two_actors'), 'family 2: another account opening the booking page (D3) is found and verified by the cross-actor check');
+  expect(verifiedFamily('R6', 'two_actors'), 'family 2: the lost update from an out-of-date tab (D7) is found and verified');
+  const famEvents = (await db.query(`SELECT payload FROM run_events WHERE run_id = $1 AND type = 'scenario.finished' ORDER BY seq`, [runId])).rows.map((r) => r.payload);
+  console.table(famEvents.map((p) => ({ family: p.family, check: p.check ?? p.invariant?.kind ?? 'claim', outcome: p.outcome, path: p.path ?? p.route ?? (p.found?.[0]?.path ?? '') })));
+  expect(famEvents.some((p) => p.check === 'cross_actor' && p.outcome === 'passed' && /\/edit$/.test(p.path)), 'family 2 control: the edit page refuses another account and is not flagged');
+  expect(findings.filter((f) => f.family === 'two_actors' && f.rule_id === 'B7').length === 1, 'family 2 control: only the booking page, not its edit page, became a finding');
+  expect(verifiedFamily('R7', 'invariant'), 'family 3: "Total guests" that leaves out a booking (D8) is found and verified');
+  expect(famEvents.some((p) => p.family === 'invariant' && p.invariant?.kind === 'count' && p.outcome === 'passed') && !findings.some((f) => f.family === 'invariant' && /rows/.test(f.title)), 'family 3 control: the "Bookings" count matches the rows and is not flagged');
+  expect(verifiedFamily('R8', 'differential'), 'family 5: the "Edit booking" link missing on a phone (D9) is found and verified');
+  expect(famEvents.some((p) => p.family === 'differential' && p.outcome === 'passed') && !findings.some((f) => f.family === 'differential' && /Cancel/.test(f.title)), 'family 5 control: "Cancel booking" is usable on both and is not flagged');
+  expect(verifiedFamily('R9', 'interruption'), 'family 4: pressing "Book table" twice while saving creates two bookings (D10) — found and verified');
+  const r9 = (await db.query(`SELECT e.outcome FROM findings f JOIN scenario_executions e ON e.scenario_id = f.control_scenario_id WHERE f.run_id = $1 AND f.rule_id = 'R9'`, [runId])).rows;
+  expect(r9.length > 0 && r9.every((r) => r.outcome === 'passed'), 'family 4 control: a single normal submit creates exactly one booking and passes');
   expect(findings.some((f) => f.category === 'configuration_observation'), 'header/cookie configuration observations recorded separately');
   const recipe = (await db.query(`SELECT 1 FROM run_events WHERE run_id = $1 AND type = 'recipe.recorded'`, [runId])).rowCount;
   expect(Boolean(recipe) && workflows.some((w) => /regist|sign.?up/i.test(w.name) && w.status === 'completed'), 'registration discovered and completed (sign-up recorded by Oddhound)');

@@ -28,10 +28,11 @@ export const BASELINE_RULES: Rule[] = [
   { id: 'B8', text: 'Required fields reject blank or whitespace-only input.', source: 'baseline' },
   { id: 'B9', text: 'After signing out, account-only pages and data are not shown without signing in again.', source: 'baseline' },
   { id: 'B10', text: 'Rules a page states about its own inputs (length, range, step, format, or a limit stated in its text) hold when a user submits the form.', source: 'baseline' },
+  { id: 'B11', text: 'When the site says a change was saved (for example "Saved" or "Booking updated"), the saved values are there when the page is reloaded or the record is reopened.', source: 'baseline' },
 ];
 /** How serious a confirmed baseline violation is, for ordering and display. */
 export const BASELINE_IMPACT: Record<string, 'high' | 'medium' | 'low'> = {
-  B1: 'high', B2: 'medium', B3: 'high', B4: 'medium', B5: 'low', B6: 'low', B7: 'high', B8: 'medium', B9: 'high', B10: 'medium',
+  B1: 'high', B2: 'medium', B3: 'high', B4: 'medium', B5: 'low', B6: 'low', B7: 'high', B8: 'medium', B9: 'high', B10: 'medium', B11: 'high',
 };
 
 /** Owner (or demo) rules plus the baseline rules, without duplicate IDs. */
@@ -169,6 +170,10 @@ export const DEMO_TARGET_RULES: Rule[] = [
   { id: 'R3', text: 'Bookings cannot be made for a date in the past.', source: 'demo_target' },
   { id: 'R4', text: 'A signed-in user can only see their own bookings.', source: 'demo_target' },
   { id: 'R5', text: 'The booking form must be usable on a phone: the submit button must be reachable and not covered.', source: 'demo_target' },
+  { id: 'R6', text: 'Saving a booking from an out-of-date page must not silently undo a change saved from another tab: the save is refused with a message, or both changes are kept.', source: 'demo_target' },
+  { id: 'R7', text: 'On My bookings, "Total guests" equals the sum of the Party column.', source: 'demo_target' },
+  { id: 'R8', text: 'Every action on a booking\'s page that is available on desktop is also available on a phone.', source: 'demo_target' },
+  { id: 'R9', text: 'Pressing "Book table" twice, reloading, or losing the connection while a booking is saved creates one booking, not two, and never shows a booking as confirmed that was not saved.', source: 'demo_target' },
 ];
 
 export function demoTargetContract(origin: string, now = new Date()): RunContract {

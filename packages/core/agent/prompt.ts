@@ -40,6 +40,16 @@ export function systemPrompt(c: RunContract, mode: AgentMode = 'steps'): string 
     `- The markup probe for text fields is ${MARKUP_PROBE}. Type it, save, then open the page that shows the saved text.`,
     '- Each result shows your budget and plan status. Do not finish while critical or high charters are open and budget remains.',
     '',
+    'Behavioral checks (Oddhound acts, looks and decides; you only say what to check):',
+    '- Claim vs. truth: after every save that changes a record or profile, type distinctive values (e.g. "Bio check 7Q2"), submit, then call check_claim with the success message exactly as shown (omit claim if there was none), the labels of the fields you saved, and revisit_path (the record\'s own page or edit form). "SAVE REPORTED" in a result is your cue. Do this for edits as well as creates.',
+    ...(c.capabilities.crossAccountRead && !c.handoff.enabled ? [
+      '- Two actors: after actor A has created a record with distinctive free text, call check_cross_actor with that record\'s page (and its edit page in a second call), and try_controls with the visible actions on it (e.g. "Cancel booking"). Oddhound signs up actor B itself; you do not need use_actor or a second create_identity for this. Never give an id this run did not create.',
+    ] : []),
+    '- Invariants: where a page shows a total, count or balance next to the values it summarises (a list with "Total guests", a cart with line totals), call check_invariant (sum or count) with the evidence. Oddhound parses the numbers and re-checks after later steps, so register it before you create, edit or cancel records that change it. A rule you only infer stays for review; cite an owner rule in rule_id when one states it.',
+    ...(c.devices.includes('mobile') ? ['- Desktop vs. phone: for key pages (a record\'s page, a form, a list with actions), call check_differential with the path. Oddhound compares the page\'s own actions on both devices; cite an owner rule in rule_id only if one says they must match.'] : []),
+    ...(writes && c.capabilities.repeatSubmission ? ['- Interruptions: on a create form, fill it with distinctive text but do not submit, then call check_interruption (double_submit, offline_submit or reload_after_submit) with the list where records appear. Oddhound submits, counts and decides; cite an owner rule in rule_id only if one covers it.'] : []),
+    ...(writes ? ['- Two tabs: for a record you created that has an edit form, call check_two_tabs with two different fields and new values (lost updates from an out-of-date page). Cite an owner rule in rule_id only if one covers it.'] : []),
+    '',
     'Hard rules (enforced by Oddhound outside your control, so do not try to work around them):',
     `- You may only act on ${c.target.origin}. Other sites are off limits.`,
     writes

@@ -9,6 +9,18 @@
 //   D3 any signed-in user can open another user's booking (object authorization)
 //   D4 on narrow screens a promo banner permanently covers the Book button
 //   D5 the party-size field has no programmatic label (accessibility)
+//   D6 family 1 (claim vs. truth): editing a booking says "Changes saved." but drops the edited notes
+//      (control: notes typed when creating a booking are saved; other edited fields are saved)
+//   D3 is also family 2 (two actors): another account can open the booking page by its URL
+//      (control: the edit page and the cancel action refuse another account in both builds)
+//   D7 family 2 (two tabs): saving the edit form from an out-of-date tab silently undoes a change
+//      saved from another tab (control: the same two edits one after the other are both kept)
+//   D8 family 3 (invariant): "Total guests" on My bookings leaves out the first booking
+//      (control: "Bookings: N" matches the number of rows in both builds)
+//   D10 family 4 (interruption): pressing "Book table" twice while the save is slow creates two bookings
+//      (control: a single normal press creates one booking in both builds)
+//   D9 family 5 (differential): the "Edit booking" link is hidden on phones
+//      (control: "Cancel booking" is usable on both desktop and a phone)
 // Controls that work in both builds: past dates are rejected, party size above 8 is rejected,
 // registration validates email/password, and users can only cancel their own bookings.
 //
@@ -24,16 +36,18 @@ const verifyToken = process.env.ODDHOUND_FIXTURE_VERIFY_TOKEN ?? 'oddhound-demo-
 const resetToken = process.env.ODDHOUND_FIXTURE_RESET_TOKEN ?? 'local-lab-reset';
 
 type User = { id: number; name: string; email: string; salt: string; hash: string };
-type Booking = { id: number; ownerId: number; guestName: string; partySize: number; date: string; notes: string; status: 'confirmed' | 'cancelled' };
+type Booking = { id: number; ownerId: number; guestName: string; partySize: number; date: string; notes: string; status: 'confirmed' | 'cancelled'; version: number };
 
 let users: User[] = [];
 let bookings: Booking[] = [];
 let sessions = new Map<string, number>();
 let nextUserId = 1;
 let nextBookingId = 1;
+/** One-time tokens of booking forms already submitted (the corrected build ignores a repeat). */
+let usedFormTokens = new Set<string>();
 
 function reset(): void {
-  users = []; bookings = []; sessions = new Map(); nextUserId = 1; nextBookingId = 1;
+  users = []; bookings = []; sessions = new Map(); nextUserId = 1; nextBookingId = 1; usedFormTokens = new Set();
 }
 
 const esc = (s: unknown) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
@@ -85,7 +99,7 @@ function page(title: string, body: string, user?: User): string {
   .promo{display:none}
   @media (max-width:480px){
     .promo{display:block;position:fixed;left:0;right:0;bottom:0;height:150px;background:#ffcc00;color:#000;padding:16px;font-weight:600;z-index:10}
-    ${fixed ? 'body{padding-bottom:170px} .promo{height:auto;position:static;margin-top:16px}' : ''}
+    ${fixed ? 'body{padding-bottom:170px} .promo{height:auto;position:static;margin-top:16px}' : '.edit-link{display:none}'}
   }
 </style></head><body>
 <header><strong>Harbor Table</strong>${user
@@ -110,13 +124,15 @@ function startSession(user: User): string {
   return `sid=${sid}; Path=/; HttpOnly; SameSite=Lax`;
 }
 
-function bookingForm(action: string, values: Partial<Record<'guest_name' | 'party_size' | 'date' | 'notes', string>>, error?: string, submitLabel = 'Book table'): string {
+function bookingForm(action: string, values: Partial<Record<'guest_name' | 'party_size' | 'date' | 'notes' | 'version' | 'form_token', string>>, error?: string, submitLabel = 'Book table'): string {
   // D5: the vulnerable build gives the party-size input a placeholder but no label.
   const partyField = fixed
     ? `<label>Party size<input name="party_size" type="number" min="1" max="8" required value="${esc(values.party_size ?? '')}"></label>`
     : `<div><input name="party_size" type="number" max="8" required placeholder="Party size" value="${esc(values.party_size ?? '')}"></div>`;
   return `${error ? `<p class="error" role="alert">${esc(error)}</p>` : ''}
 <form class="stack" method="post" action="${esc(action)}">
+  ${values.version !== undefined ? `<input type="hidden" name="version" value="${esc(values.version)}">` : ''}
+  ${values.form_token !== undefined ? `<input type="hidden" name="form_token" value="${esc(values.form_token)}">` : ''}
   <label>Guest name<input name="guest_name" required value="${esc(values.guest_name ?? '')}"></label>
   ${partyField}
   <label>Date<input name="date" type="date" required value="${esc(values.date ?? '')}"></label>
@@ -129,7 +145,7 @@ function bookingForm(action: string, values: Partial<Record<'guest_name' | 'part
 </form>`;
 }
 
-function validateBooking(form: URLSearchParams): { error?: string; value?: Omit<Booking, 'id' | 'ownerId' | 'status'> } {
+function validateBooking(form: URLSearchParams): { error?: string; value?: Omit<Booking, 'id' | 'ownerId' | 'status' | 'version'> } {
   const rawName = form.get('guest_name') ?? '';
   const guestName = fixed ? rawName.trim() : rawName;
   if (guestName.length === 0) return { error: 'Guest name is required.' }; // D2: '   ' passes in the vulnerable build
@@ -209,22 +225,32 @@ const server = createServer(async (req, res) => {
 
     if (path === '/bookings' && req.method === 'GET' && user) {
       const mine = bookings.filter((b) => b.ownerId === user.id);
+      // D8: the vulnerable build leaves the first booking out of "Total guests" (the count is right in both).
       const rows = mine.map((b) => `<tr><td><a href="/bookings/${b.id}">#${b.id}</a></td><td>${esc(b.guestName)}</td><td>${b.partySize}</td><td>${esc(b.date)}</td><td>${b.status}</td></tr>`).join('');
       return send(res, 200, page('My bookings', `<h1>My bookings</h1>
 ${url.searchParams.get('welcome') ? '<p class="notice">Your account is ready.</p>' : ''}
 ${url.searchParams.get('created') ? `<p class="notice">Booking #${esc(url.searchParams.get('created'))} confirmed.</p>` : ''}
 <p><a href="/bookings/new">New booking</a></p>
-${mine.length ? `<table><thead><tr><th>Booking</th><th>Guest</th><th>Party</th><th>Date</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>` : '<p>You have no bookings yet.</p>'}`, user));
+${mine.length ? `<table><thead><tr><th>Booking</th><th>Guest</th><th>Party</th><th>Date</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>
+<p class="summary">Bookings: ${mine.length} · Total guests: ${(fixed ? mine : mine.slice(1)).reduce((n, b) => n + b.partySize, 0)}</p>` : '<p>You have no bookings yet.</p>'}`, user));
     }
 
     if (path === '/bookings/new' && user) {
-      if (req.method === 'GET') return send(res, 200, page('New booking', `<h1>New booking</h1>${bookingForm('/bookings', {})}`, user));
+      if (req.method === 'GET') return send(res, 200, page('New booking', `<h1>New booking</h1>${bookingForm('/bookings', { form_token: randomBytes(12).toString('hex') })}`, user));
     }
     if (path === '/bookings' && req.method === 'POST' && user) {
       const form = await readForm(req);
       const result = validateBooking(form);
       if (result.error) return send(res, 422, page('New booking', `<h1>New booking</h1>${bookingForm('/bookings', Object.fromEntries(form), result.error)}`, user));
-      const booking: Booking = { id: nextBookingId++, ownerId: user.id, status: 'confirmed', ...result.value! };
+      // D10: saving takes a moment, so a double press sends the form twice. Only the corrected build
+      // remembers the form's one-time token and ignores the repeat.
+      const token = form.get('form_token') ?? '';
+      if (fixed && token) {
+        if (usedFormTokens.has(token)) return redirect(res, '/bookings');
+        usedFormTokens.add(token);
+      }
+      await new Promise((r) => setTimeout(r, 400));
+      const booking: Booking = { id: nextBookingId++, ownerId: user.id, status: 'confirmed', ...result.value!, version: 1 };
       bookings.push(booking);
       return redirect(res, `/bookings?created=${booking.id}`);
     }
@@ -237,18 +263,25 @@ ${mine.length ? `<table><thead><tr><th>Booking</th><th>Guest</th><th>Party</th><
       if (!booking || (!owns && (fixed || match[2]))) return send(res, 404, page('Not found', '<h1>Booking not found</h1>', user));
       if (!match[2] && req.method === 'GET') {
         return send(res, 200, page(`Booking #${booking.id}`, `<h1>Booking #${booking.id}</h1>
+${url.searchParams.get('saved') ? '<p class="notice" role="status">Changes saved.</p>' : ''}
 <dl><dt>Guest</dt><dd data-field="guest_name">${esc(booking.guestName)}</dd><dt>Party size</dt><dd data-field="party_size">${booking.partySize}</dd>
 <dt>Date</dt><dd data-field="date">${esc(booking.date)}</dd><dt>Notes</dt><dd data-field="notes">${esc(booking.notes)}</dd><dt>Status</dt><dd data-field="status">${booking.status}</dd></dl>
-${owns && booking.status === 'confirmed' ? `<p><a href="/bookings/${booking.id}/edit">Edit booking</a></p><form method="post" action="/bookings/${booking.id}/cancel"><button type="submit">Cancel booking</button></form>` : ''}`, user));
+${owns && booking.status === 'confirmed' ? `<p class="edit-link"><a href="/bookings/${booking.id}/edit">Edit booking</a></p><form method="post" action="/bookings/${booking.id}/cancel"><button type="submit">Cancel booking</button></form>` : ''}`, user));
       }
       if (match[2] === '/edit') {
-        if (req.method === 'GET') return send(res, 200, page('Edit booking', `<h1>Edit booking #${booking.id}</h1>${bookingForm(`/bookings/${booking.id}/edit`, { guest_name: booking.guestName, party_size: String(booking.partySize), date: booking.date, notes: booking.notes }, undefined, 'Save changes')}`, user));
+        if (req.method === 'GET') return send(res, 200, page('Edit booking', `<h1>Edit booking #${booking.id}</h1>${bookingForm(`/bookings/${booking.id}/edit`, { guest_name: booking.guestName, party_size: String(booking.partySize), date: booking.date, notes: booking.notes, version: String(booking.version) }, undefined, 'Save changes')}`, user));
         if (req.method === 'POST') {
           const form = await readForm(req);
+          // D7: only the corrected build notices that the form was opened before another save.
+          if (fixed && Number(form.get('version')) !== booking.version) {
+            return send(res, 409, page('Edit booking', `<h1>Edit booking #${booking.id}</h1>${bookingForm(`/bookings/${booking.id}/edit`, { guest_name: booking.guestName, party_size: String(booking.partySize), date: booking.date, notes: booking.notes, version: String(booking.version) }, 'This booking was changed in another tab or on another device. Check the details below and save again.', 'Save changes')}`, user));
+          }
           const result = validateBooking(form);
           if (result.error) return send(res, 422, page('Edit booking', `<h1>Edit booking #${booking.id}</h1>${bookingForm(`/bookings/${booking.id}/edit`, Object.fromEntries(form), result.error, 'Save changes')}`, user));
-          Object.assign(booking, result.value);
-          return redirect(res, `/bookings/${booking.id}`);
+          // D6: the vulnerable build keeps the old notes but still reports the save as done.
+          Object.assign(booking, fixed ? result.value : { ...result.value, notes: booking.notes });
+          booking.version++;
+          return redirect(res, `/bookings/${booking.id}?saved=1`);
         }
       }
       if (match[2] === '/cancel' && req.method === 'POST') {

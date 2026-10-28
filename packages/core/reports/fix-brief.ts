@@ -51,6 +51,43 @@ function reproduction(s: Scenario): string[] {
       const check = x.expect ? ` ${i + 1 === s.oracleStep ? 'Rule check' : 'Precondition'}: ${expectationText(x.expect)}.` : '';
       steps.push(`${traceStepText(x.step)}${check}`);
     });
+  } else if (s.kind === 'claim_check') {
+    if (s.setup) steps.push(setupText(s.setup));
+    steps.push(`Open \`${s.start}\` on a ${s.device === 'mobile' ? '390x844 phone' : 'desktop'} screen.`);
+    for (const st of s.steps) steps.push(traceStepText(st));
+    steps.push(s.claim ? `Check that the page says "${s.claim}".` : 'Note that the page shows no success message.');
+    steps.push(`Reload the page the save landed on${s.revisit.length ? ` and open ${s.revisit.map((p) => `\`${p}\``).join(', ')}` : ''}, waiting up to ${s.windowMs / 1000} s.`);
+    steps.push(`Check: ${s.checks.map((c) => `"${c.field}" shows ${JSON.stringify(c.value)}`).join('; ')}.`);
+  } else if (s.kind === 'cross_actor') {
+    steps.push(setupText(s.setup));
+    steps.push(`Open \`${s.path}\` as that account and confirm it shows ${s.protect.map((f) => `"${f}"`).join(', ')}.`);
+    steps.push('Sign up a second, unrelated account the same way.');
+    if (s.listPath) steps.push(`As the second account, open \`${s.listPath}\`: the first account's record is not listed there.`);
+    steps.push(`As the second account, open exactly \`${s.path}\`.${s.controls.length ? ` Press ${s.controls.map((c) => `"${c.target}"`).join(', ')}, then reopen it as the first account.` : ''}`);
+    steps.push(`Check: the second account does not see the first account's ${s.protect.map((f) => `"${f}"`).join(', ')}${s.controls.length ? ', and the first account\'s record is unchanged' : ''}.`);
+  } else if (s.kind === 'interruption') {
+    steps.push(`Open \`${s.listPath}\` and note how often ${JSON.stringify(s.value)} appears.`);
+    steps.push(`Open \`${s.form.path}\` and fill: ${Object.entries(s.form.fields).map(([k, v]) => `${k} = ${JSON.stringify(v)}`).join('; ')}.`);
+    steps.push(s.interruption === 'double_submit' ? `Press "${s.form.submit}", then press it again 0.25 s later.`
+      : s.interruption === 'offline_submit' ? `Go offline, press "${s.form.submit}", wait 1.5 s, then go back online.`
+        : s.interruption === 'reload_after_submit' ? `Press "${s.form.submit}" and reload the page straight away.` : `Press "${s.form.submit}" once.`);
+    steps.push(`If nothing was saved, submit the form once more normally. Check: \`${s.listPath}\` shows exactly one new ${JSON.stringify(s.value)}, and no success message appeared while offline.`);
+  } else if (s.kind === 'differential') {
+    if (s.setup) steps.push(setupText(s.setup));
+    steps.push(`Open \`${s.path}\` on desktop (1440x900): ${s.controls.map((c) => `${c.role} "${c.label}"`).join(', ')} ${s.controls.length === 1 ? 'is' : 'are'} visible.`);
+    steps.push(`Open the same page with the same account on a 390x844 phone. Check: ${s.controls.map((c) => `"${c.label}"`).join(', ')} ${s.controls.length === 1 ? 'is' : 'are'} visible there too.`);
+  } else if (s.kind === 'invariant') {
+    for (const st of s.setups) steps.push(setupText(st));
+    steps.push(`Open \`${s.path}\`.`);
+    steps.push(s.invariant.kind === 'sum'
+      ? `Check: the number after "${s.invariant.total}" equals the sum of the "${s.invariant.column}" column.`
+      : `Check: the number after "${s.invariant.total}" equals the number of rows in the table.`);
+  } else if (s.kind === 'two_tab') {
+    steps.push(setupText(s.setup));
+    steps.push(s.sequential ? `Open \`${s.path}\` in one tab.` : `Open \`${s.path}\` in two browser tabs.`);
+    steps.push(`${s.sequential ? 'Set' : 'In the first tab, set'} "${s.first.field}" to ${JSON.stringify(s.first.value)} and save.`);
+    steps.push(`${s.sequential ? 'Reopen the page, set' : 'In the second tab (not reloaded), set'} "${s.second.field}" to ${JSON.stringify(s.second.value)} and save.`);
+    steps.push(`Reopen \`${s.path}\`. Check: "${s.first.field}" still shows ${JSON.stringify(s.first.value)}, or the second save was refused with a message.`);
   } else {
     if (s.setup) steps.push(setupText(s.setup));
     steps.push(`Open \`${s.start}\` on a ${s.device === 'mobile' ? '390x844 phone' : 'desktop'} screen.`);
@@ -130,7 +167,12 @@ export function fixBriefMarkdown(b: BriefInput): string {
   lines.push('## Implementation guidance (hypotheses, not verified root causes)');
   lines.push('- Oddhound did not read your source code. Locate the handler that processes the request above; the cause has not been confirmed.');
   if (b.scenario?.assertion.kind === 'form_rule') lines.push('- Likely area: server-side validation for this form. Client-side attributes (min/max/required) are not enough on their own.');
-  if (b.scenario?.assertion.kind === 'cross_account_read') lines.push('- Likely area: the record lookup does not check that the record belongs to the signed-in user (object-level authorization).');
+  if (b.scenario?.assertion.kind === 'cross_account_read' || b.scenario?.assertion.kind === 'cross_actor') lines.push('- Likely area: the record lookup (or the action handler) does not check that the record belongs to the signed-in user (object-level authorization).');
+  if (b.scenario?.assertion.kind === 'interruption') lines.push('- Likely area: the create handler has no protection against a repeated request. Disable the button while submitting and make the server idempotent (for example a one-time form token).');
+  if (b.scenario?.assertion.kind === 'differential') lines.push('- Likely area: a narrow-screen style or component that hides the control (for example a media query with display: none). Keep the action reachable on phones, in place or in a visible menu.');
+  if (b.scenario?.assertion.kind === 'invariant') lines.push('- Likely area: the code that computes the summary value (a filter, an off-by-one, or a stale cached total). Compute it from the same records the page lists.');
+  if (b.scenario?.assertion.kind === 'two_tab') lines.push('- Likely area: the edit form posts every field, so a save from an out-of-date page overwrites newer values. Send a version (or updated-at) with the form and refuse or merge a stale save.');
+  if (b.scenario?.assertion.kind === 'claim_check') lines.push('- Likely area: the save handler reports success before (or without) persisting every submitted field; check that each field above is written and that the success message is only shown after the write succeeds.');
   if (b.scenario?.assertion.kind === 'mobile_reachability') lines.push('- Likely area: a fixed or overlaying element on narrow screens; reserve space for it or let users dismiss it.');
   if (b.scenario?.assertion.kind === 'trace') lines.push(TRACE_GUIDANCE[b.scenario.assertion.oracle.type] ?? '- Likely area: the handler for the last step above.');
   if (b.scenario?.assertion.kind === 'batch') lines.push('- Likely area: the handler for the step marked "Rule check" above. If the page states a limit for this input, the server must enforce the same limit; client-side attributes alone are not enough.');
@@ -140,7 +182,9 @@ export function fixBriefMarkdown(b: BriefInput): string {
   lines.push('## Acceptance checks');
   lines.push(`- The original scenario must now pass unchanged (assertion hash \`${b.scenario?.assertionHash.slice(0, 12) ?? 'n/a'}\`).`);
   if (b.control?.assertion.kind === 'form_rule') lines.push(`- A valid neighbouring case must still work: ${Object.entries(b.control.assertion.form.fields).map(([k, v]) => `${k} = ${JSON.stringify(v)}`).join('; ')} is accepted.`);
-  if (b.scenario?.assertion.kind === 'cross_account_read') lines.push('- The owner can still open their own record.');
+  if (b.scenario?.assertion.kind === 'cross_account_read' || b.scenario?.assertion.kind === 'cross_actor') lines.push('- The owner can still open their own record.');
+  if (b.scenario?.assertion.kind === 'claim_check') lines.push('- The success message still appears after a save that worked.');
+  if (b.scenario?.assertion.kind === 'two_tab') lines.push('- The same two edits made one after the other in one tab are both kept.');
   lines.push('');
   lines.push('## Retest');
   lines.push(`Press "Retest" on this finding in Oddhound after deploying the fix. Retest replays scenario ${b.scenario?.id ?? 'n/a'} with fresh synthetic accounts; no credentials are needed.`);

@@ -87,7 +87,12 @@ function instrument(version: number) {
     const id = el.getAttribute('id');
     if (id) { const l = document.querySelector(`label[for="${CSS.escape(id)}"]`); if (l) return clean(l.textContent); }
     const wrap = el.closest('label');
-    if (wrap) return clean(wrap.textContent);
+    if (wrap) {
+      // The label's own words only: a wrapped textarea's text or a select's options are not its label.
+      const copy = wrap.cloneNode(true) as Element;
+      copy.querySelectorAll('textarea, select, input, button').forEach((c) => c.remove());
+      return clean(copy.textContent);
+    }
     return '';
   };
   const describeCover = (el: Element, r: DOMRect): string | undefined => {
@@ -236,7 +241,8 @@ function instrument(version: number) {
     forms: forms.map((f, index) => ({ index, action: f.getAttribute('action') ?? '', method: (f.getAttribute('method') ?? 'get').toLowerCase(), noValidate: f.noValidate })),
     elements: out,
     tables,
-    text: clean(mainText).slice(0, 1200),
+    // Page text gets its own cap: clean() cuts labels at 120 characters, which hid most of the page.
+    text: mainText.replace(/\s+/g, ' ').trim().slice(0, 1200),
     viewport: { width: vw, height: vh },
     scroll: { y: Math.round(window.scrollY), maxY: Math.max(0, document.documentElement.scrollHeight - vh) },
   };

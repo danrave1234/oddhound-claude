@@ -21,7 +21,7 @@ function stepLine(st: Step): string {
 }
 
 /** Create the record the test needs and keep its number (from the URL the form lands on) as {id}. */
-function setupLines(s: Trace | Batch): string[] {
+function setupLines(s: { setup?: Trace["setup"] }): string[] {
   if (!s.setup) return [];
   return [
     '  // Create the record this test works on; {id} below is its number.',
@@ -83,6 +83,105 @@ function traceBody(s: Trace, signedIn: boolean): string {
   return `${lines.join('\n')}\n`;
 }
 
+type Claim = Extract<Scenario, { kind: 'claim_check' }>;
+type CrossActor = Extract<Scenario, { kind: 'cross_actor' }>;
+
+/** Family 1: the save, its success message, then each saved value after reloading and reopening. */
+function claimBody(s: Claim, signedIn: boolean): string {
+  const lines: string[] = [];
+  if (s.device === 'mobile') lines.push('  await page.setViewportSize({ width: 390, height: 844 });');
+  lines.push(`  const vars: Record<string, string> = ${signedIn ? '{ ...who, marker }' : '{ ...identity(), marker }'};`);
+  lines.push(...setupLines(s));
+  lines.push(`  await page.goto(new URL(fill(${j(s.start)}, vars), BASE_URL).toString());`);
+  for (const st of s.steps) lines.push(stepLine(st));
+  lines.push("  await page.waitForLoadState('networkidle').catch(() => {});");
+  if (s.claim) lines.push(`  await expect(page.locator('body')).toContainText(${j(s.claim)}); // the page claims success`);
+  lines.push("  { const u = new URL(page.url()); vars.landed_id = [...u.pathname.split('/'), ...u.searchParams.values()].find((v) => /^\\d+$/.test(v)) ?? ''; }");
+  lines.push(`  const pages = [new URL(page.url()).pathname + new URL(page.url()).search, ...${j(s.revisit)}.map((p) => fill(p, vars))];`);
+  lines.push(`  const checks = ${j(s.checks)}.map((c) => ({ field: c.field, value: fill(c.value, vars) }));`);
+  lines.push(`  // Rule: every saved value is there again (looked for up to ${s.windowMs / 1000} s, in page text or form values).`);
+  lines.push('  await expect(async () => {');
+  lines.push('    const seen: string[] = [];');
+  lines.push('    for (const p of pages) {');
+  lines.push('      await page.goto(new URL(p, BASE_URL).toString());');
+  lines.push("      seen.push((await page.locator('body').innerText()).toLowerCase());");
+  lines.push("      seen.push(...(await page.locator('input, textarea, select').evaluateAll((els) => els.map((e) => (e as HTMLInputElement).value ?? ''))).map((v) => v.toLowerCase()));");
+  lines.push('    }');
+  lines.push("    for (const c of checks) expect(seen.some((t) => t.replace(/\\s+/g, ' ').includes(c.value.toLowerCase().replace(/\\s+/g, ' ').trim())), c.field).toBe(true);");
+  lines.push(`  }).toPass({ timeout: ${Math.max(5_000, s.windowMs + 5_000)} });`);
+  return `${lines.join('\n')}\n`;
+}
+
+/** Family 2: account A creates the record; a second account opens exactly its URL. */
+function crossActorBody(s: CrossActor): string {
+  const own = s.protect.map((f) => s.setup.fields[f]).filter((v): v is string => v !== undefined);
+  return `  const vars: Record<string, string> = { ...who, marker };
+  await submitForm(page, ${j(s.setup.path)}, ${j(s.setup.fields)}, ${j(s.setup.submit)}, vars);
+  { const u = new URL(page.url()); vars.id = [...u.pathname.split('/'), ...u.searchParams.values()].find((v) => /^\\d+$/.test(v)) ?? ''; }
+  const recordUrl = new URL(fill(${j(s.path)}, vars), BASE_URL).toString();
+  const own = ${j(own)}.map((v) => fill(v, vars));
+  await page.goto(recordUrl);
+  for (const v of own) await expect(page.locator('body')).toContainText(v); // positive control: the owner sees it
+  const other = await browser.newContext();
+  const page2 = await other.newPage();
+  await submitForm(page2, ${j(s.auth.path)}, ${j(s.auth.fields)}, ${j(s.auth.submit)}, identity());
+  await page2.goto(recordUrl);
+  // Rule: another account must not see this record${s.controls.length ? ' or change it' : ''}.
+  for (const v of own) await expect(page2.locator('body')).not.toContainText(v);
+${s.controls.map((c) => `  { const before = await page.locator('body').innerText();
+    const control = page2.getByRole(${j(c.role)}, { name: ${j(c.target)}, exact: true });
+    if (await control.count()) await control.first().click();
+    await page.goto(recordUrl);
+    expect(await page.locator('body').innerText()).toBe(before); }
+  await page2.goto(recordUrl);
+`).join('')}  await other.close();
+`;
+}
+
+type InvariantScenario = Extract<Scenario, { kind: 'invariant' }>;
+
+/** Family 3: recreate the records, open the page, parse the numbers and compare (same reading rules as Oddhound). */
+function invariantBody(s: InvariantScenario, signedIn: boolean): string {
+  const inv = s.invariant;
+  return `  const vars: Record<string, string> = ${signedIn ? '{ ...who, marker }' : '{ ...identity(), marker }'};
+${s.setups.map((st) => `  await submitForm(page, ${j(st.path)}, ${j(st.fields)}, ${j(st.submit)}, vars);
+  { const u = new URL(page.url()); vars.id = [...u.pathname.split('/'), ...u.searchParams.values()].find((v) => /^\\d+$/.test(v)) ?? ''; }
+`).join('')}  await page.goto(new URL(fill(${j(s.path)}, vars), BASE_URL).toString());
+  const num = (t: string) => { const m = t.replace(/(\\d),(?=\\d{3}\\b)/g, '$1').match(/-?\\d+(?:\\.\\d+)?/g); return m && m.length === 1 ? Number(m[0]) : NaN; };
+  const text = await page.locator('body').innerText();
+  const label = ${j(inv.total)}.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\$&');
+  const total = num(new RegExp(label + '\\\\s*[:=]?\\\\s*([^\\\\s\\\\d-]{0,3}\\\\s?-?[\\\\d.,]+)', 'i').exec(text)?.[1] ?? '');
+  const table = page.locator('table').first();
+  const rows = (await table.locator('tbody tr').allInnerTexts()).filter((r) => !r.toLowerCase().includes(${j(inv.total.toLowerCase())}));
+${inv.kind === 'sum' ? `  const headers = (await table.locator('thead th').allInnerTexts()).map((h) => h.trim().toLowerCase());
+  const col = headers.findIndex((h) => h.includes(${j(inv.column.toLowerCase())}));
+  const parts = await Promise.all(rows.map((_, i) => table.locator('tbody tr').nth(i).locator('td').nth(col).innerText()));
+  // Rule: the total equals the sum of the column (to the cent).
+  expect(Math.abs(parts.map(num).reduce((a, b) => a + b, 0) - total)).toBeLessThan(0.005);
+` : `  // Rule: the count equals the number of rows.
+  expect(rows.length).toBe(total);
+`}`;
+}
+
+type TwoTab = Extract<Scenario, { kind: 'two_tab' }>;
+
+/** Family 2 (two tabs): an out-of-date tab's save must not silently undo the other tab's change. */
+function twoTabBody(s: TwoTab, signedIn: boolean): string {
+  const save = (tab: string, f: TwoTab['first']) => `  await (await field(${tab}, ${j(f.field)})).fill(fill(${j(f.value)}, vars));
+  await (await field(${tab}, ${j(f.field)})).locator('xpath=ancestor::form[1]').locator('button[type=submit], input[type=submit], button:not([type])').first().click();
+  await ${tab}.waitForLoadState('domcontentloaded');
+`;
+  return `  const vars: Record<string, string> = ${signedIn ? '{ ...who, marker }' : '{ ...identity(), marker }'};
+${setupLines(s).join('\n')}
+  const recordUrl = new URL(fill(${j(s.path)}, vars), BASE_URL).toString();
+  await page.goto(recordUrl);
+${s.sequential ? '' : '  const tab2 = await page.context().newPage();\n  await tab2.goto(recordUrl);\n'}${save('page', s.first)}${s.sequential ? '  await page.goto(recordUrl);\n' : ''}${save(s.sequential ? 'page' : 'tab2', s.second)}  const refused = await ${s.sequential ? 'page' : 'tab2'}.locator('[role=alert], .error').count() > 0;
+  await page.goto(recordUrl);
+  // Rule: the first change is kept, or the out-of-date save was refused with a message.
+  if (!refused) await expect(await field(page, ${j(s.first.field)})).toHaveValue(fill(${j(s.first.value)}, vars));
+`;
+}
+
 export function playwrightTest(s: Scenario, meta: { title: string; scenarioId: string; assertionHash: string }): string {
   const header = `// Oddhound regression test (exported). Scenario ${meta.scenarioId}, assertion ${meta.assertionHash.slice(0, 12)}.
 // Run: BASE_URL=https://your-staging-site npx playwright test oddhound-${meta.scenarioId.slice(0, 8)}.spec.ts
@@ -140,6 +239,43 @@ async function submitForm(page: Page, path: string, fields: Record<string, strin
     body = `${auth}${traceBody(s, Boolean(auth))}`;
   } else if (s.kind === 'batch') {
     body = `${auth}${batchBody(s, Boolean(auth))}`;
+  } else if (s.kind === 'claim_check') {
+    body = `${auth}${claimBody(s, Boolean(auth))}`;
+  } else if (s.kind === 'cross_actor') {
+    body = `${auth}${crossActorBody(s)}`;
+  } else if (s.kind === 'two_tab') {
+    body = `${auth}${twoTabBody(s, Boolean(auth))}`;
+  } else if (s.kind === 'invariant') {
+    body = `${auth}${invariantBody(s, Boolean(auth))}`;
+  } else if (s.kind === 'interruption') {
+    const press = s.interruption === 'double_submit' ? '  const box = (await submit.boundingBox())!;\n  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);\n  await page.waitForTimeout(250);\n  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);\n'
+      : s.interruption === 'offline_submit' ? '  await page.context().setOffline(true);\n  await submit.click({ noWaitAfter: true }).catch(() => {});\n  await page.waitForTimeout(1500);\n  const claimedOffline = await page.locator(\'[role=status]:visible, .notice:visible\').count() > 0;\n  await page.context().setOffline(false);\n  expect(claimedOffline, \'no success message while offline\').toBe(false);\n'
+        : s.interruption === 'reload_after_submit' ? '  await submit.click({ noWaitAfter: true });\n  await page.waitForTimeout(150);\n  await page.reload().catch(() => {});\n' : '  await submit.click();\n';
+    body = `${auth}  const vars: Record<string, string> = ${auth ? '{ ...who, marker }' : '{ ...identity(), marker }'};
+  const value = fill(${j(s.value)}, vars).toLowerCase();
+  const count = async () => { await page.goto(new URL(fill(${j(s.listPath)}, vars), BASE_URL).toString()); return (await page.locator('body').innerText()).toLowerCase().split(value).length - 1; };
+  const before = await count();
+  await page.goto(new URL(fill(${j(s.form.path)}, vars), BASE_URL).toString());
+  for (const [k, v] of Object.entries(${j(s.form.fields)})) await (await field(page, k)).fill(fill(v, vars));
+  const submit = page.getByRole('button', { name: ${j(s.form.submit)} }).first();
+${press}  await page.waitForTimeout(1500);
+  let after = await count();
+  if (after === before) { await submitForm(page, ${j(s.form.path)}, ${j(s.form.fields)}, ${j(s.form.submit)}, vars); after = await count(); }
+  // Rule: one interrupted submit (plus at most one retry) creates exactly one record.
+  expect(after - before).toBe(1);
+`;
+  } else if (s.kind === 'differential') {
+    body = `${auth}  const vars: Record<string, string> = ${auth ? '{ ...who, marker }' : '{ ...identity(), marker }'};
+${setupLines(s).join('\n')}
+  const recordUrl = new URL(fill(${j(s.path)}, vars), BASE_URL).toString();
+  const controls = ${j(s.controls)} as { label: string; role: 'button' | 'link' }[];
+  await page.goto(recordUrl);
+  for (const c of controls) await expect(page.getByRole(c.role, { name: c.label, exact: true }).first()).toBeVisible(); // desktop
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(recordUrl);
+  // Rule: each control usable on desktop is visible on a phone too.
+  for (const c of controls) await expect(page.getByRole(c.role, { name: c.label, exact: true }).first()).toBeVisible();
+`;
   } else {
     body = `${auth}  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(new URL(${j(s.path)}, BASE_URL).toString());
@@ -148,7 +284,7 @@ async function submitForm(page: Page, path: string, fields: Record<string, strin
   await control.click({ trial: true, timeout: 5000 });
 `;
   }
-  const fixture = s.kind === 'cross_account_read' ? '{ page, browser }' : '{ page }';
+  const fixture = s.kind === 'cross_account_read' || s.kind === 'cross_actor' ? '{ page, browser }' : '{ page }';
   return `${header}${handoff ? 'test.use({ storageState: process.env.STORAGE_STATE });\n' : ''}
 test(${j(meta.title)}, async (${fixture}) => {
 ${body}});

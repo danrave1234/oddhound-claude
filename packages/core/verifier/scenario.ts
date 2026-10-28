@@ -11,6 +11,7 @@ import type { BrowserContext, Page } from 'playwright';
 import { canonicalJson, sha256 } from '../ledger/runs.ts';
 import { attachSentinels, checkPage, describeSignal, routeOf, type Signal } from '../browser/sentinels.ts';
 import { ExpectSchema, judgeExpectation, pageFacts } from './expect.ts';
+import { DOUBLE_PRESS_GAP_MS, INTERRUPTION_SETTLE_MS, claimVisible, judgeCrossActor, judgeInterruption, judgeInvariant, judgePersistence, judgeTwoTabs, occurrences, readTables, readView, rejectionShown, type Interruption, type PageView } from './behavior.ts';
 
 const Template = z.string().max(200);
 const FieldMap = z.record(z.string().min(1).max(80), Template).refine((m) => Object.keys(m).length > 0 && Object.keys(m).length <= 12, 'between 1 and 12 fields');
@@ -89,6 +90,87 @@ export const ScenarioSchema = z.discriminatedUnion('kind', [
     steps: z.array(z.object({ step: z.lazy(() => TraceStepSchema), expect: ExpectSchema.optional() })).min(1).max(15),
     oracleStep: z.number().int().min(1).max(15),
   }),
+  // Family 1, claim vs. truth: the recorded save (ending at its submit), the success message the page
+  // showed, and the saved values that must be visible again after reloading the page the save landed
+  // on and reopening the record. A missing value is only reported after the bounded window.
+  z.object({
+    kind: z.literal('claim_check'),
+    device: z.enum(['desktop', 'mobile']),
+    auth: AuthRecipeSchema.optional(),
+    setup: SetupSchema.optional(),
+    start: z.string().startsWith('/').max(300),
+    steps: z.array(z.lazy(() => TraceStepSchema)).min(1).max(14),
+    /** The success text the page showed after the save (null: it showed none; never verified then). */
+    claim: z.string().min(2).max(120).nullable(),
+    checks: z.array(z.object({ field: z.string().min(1).max(80), value: z.string().min(1).max(500) })).min(1).max(6),
+    /** Pages reopened besides reloading where the save landed. {id}: setup record; {landed_id}: the number in the landed URL. */
+    revisit: z.array(z.string().startsWith('/').max(300)).max(2),
+    windowMs: z.number().int().min(0).max(10_000),
+  }),
+  // Family 2, cross-actor access: actor A creates the record through the recorded form, actor B (a
+  // separate fresh account) opens exactly that record's URL and presses the controls it can see.
+  z.object({
+    kind: z.literal('cross_actor'),
+    device: z.enum(['desktop', 'mobile']),
+    auth: FormAuthRecipeSchema,
+    setup: SetupSchema,
+    path: z.string().startsWith('/').max(300),
+    /** A's list of its own records (where the app shows what belongs to A); B's copy must not list it. */
+    listPath: z.string().startsWith('/').max(300).optional(),
+    /** Setup fields whose values are A's own content. */
+    protect: z.array(z.string().min(1).max(80)).min(1).max(4),
+    controls: z.array(z.object({ target: z.string().min(1).max(120), role: z.enum(['button', 'link']) })).max(2),
+    expectation: z.literal('denied'),
+  }),
+  // Family 2, same actor in two tabs: both tabs open the record's edit form, the first saves a change
+  // to one field, then the out-of-date second tab saves a change to another. `sequential` is the
+  // neighbouring control: the same two edits one after the other in one tab.
+  z.object({
+    kind: z.literal('two_tab'),
+    device: z.enum(['desktop', 'mobile']),
+    auth: AuthRecipeSchema.optional(),
+    setup: SetupSchema,
+    path: z.string().startsWith('/').max(300),
+    first: z.object({ field: z.string().min(1).max(80), value: z.string().min(1).max(200) }),
+    second: z.object({ field: z.string().min(1).max(80), value: z.string().min(1).max(200) }),
+    sequential: z.boolean(),
+    expectation: z.literal('no_lost_update'),
+  }),
+  // Family 3, invariant: recreate the records the page summarises (the run's own create forms), open the
+  // page and check the invariant with numbers parsed by code.
+  z.object({
+    kind: z.literal('invariant'),
+    device: z.enum(['desktop', 'mobile']),
+    auth: AuthRecipeSchema.optional(),
+    setups: z.array(SetupSchema).max(4),
+    path: z.string().startsWith('/').max(300),
+    invariant: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('sum'), total: z.string().min(1).max(80), column: z.string().min(1).max(80) }),
+      z.object({ kind: z.literal('count'), total: z.string().min(1).max(80), column: z.string().min(1).max(80).optional() }),
+    ]),
+  }),
+  // Family 5, differential: the same page for the same account on desktop and on a phone; each control
+  // that is visible on desktop must be visible on the phone too.
+  z.object({
+    kind: z.literal('differential'),
+    device: z.literal('desktop'),
+    auth: AuthRecipeSchema.optional(),
+    setup: SetupSchema.optional(),
+    path: z.string().startsWith('/').max(300),
+    compare: z.literal('desktop_vs_mobile'),
+    controls: z.array(z.object({ label: z.string().min(1).max(120), role: z.enum(['button', 'link']) })).min(1).max(6),
+  }),
+  // Family 4, interruption: the recorded create form submitted with an ordinary interruption; the list
+  // must gain exactly one record carrying `value`. `none` is the neighbouring control (a normal submit).
+  z.object({
+    kind: z.literal('interruption'),
+    device: z.enum(['desktop', 'mobile']),
+    auth: AuthRecipeSchema.optional(),
+    form: FormSchema,
+    listPath: z.string().startsWith('/').max(300),
+    value: z.string().min(4).max(200),
+    interruption: z.enum(['none', 'double_submit', 'offline_submit', 'reload_after_submit']),
+  }),
 ]);
 export type Scenario = z.infer<typeof ScenarioSchema>;
 
@@ -162,7 +244,7 @@ export function newReplaySessions(): Map<string, StorageState> { return new Map(
 
 class ReplayBlocked extends Error {}
 
-function expand(template: string, vars: Record<string, string>): string {
+export function expand(template: string, vars: Record<string, string>): string {
   return template.replace(/\{(\w+)(?:([+-])(\d+))?\}/g, (whole, name: string, sign?: string, n?: string) => {
     if (name === 'date' || name === 'today') {
       const d = new Date();
@@ -183,7 +265,7 @@ async function fieldLocator(page: Page, key: string) {
   throw new ReplayBlocked(`field not found: ${key}`);
 }
 
-async function fillAndSubmit(page: Page, origin: string, form: { path: string; fields: Record<string, string>; submit: string }, vars: Record<string, string>) {
+export async function fillAndSubmit(page: Page, origin: string, form: { path: string; fields: Record<string, string>; submit: string }, vars: Record<string, string>) {
   await page.goto(new URL(form.path, origin).toString(), { waitUntil: 'domcontentloaded' });
   for (const [key, template] of Object.entries(form.fields)) {
     const loc = await fieldLocator(page, key);
@@ -302,6 +384,46 @@ export async function replayScenario(s: Scenario, env: ReplayEnv): Promise<Repla
 
     if (s.kind === 'trace') return await replayTrace(s, open, env, screenshots);
     if (s.kind === 'batch') return await replayBatch(s, open, env, screenshots);
+    if (s.kind === 'claim_check') return await replayClaim(s, open, env, screenshots);
+    if (s.kind === 'cross_actor') return await replayCrossActor(s, open, env, screenshots);
+    if (s.kind === 'two_tab') return await replayTwoTabs(s, open, env, screenshots);
+    if (s.kind === 'interruption') return await replayInterruption(s, open, env, screenshots);
+    if (s.kind === 'differential') {
+      // Same account on both devices: the role A session is reused for the phone context.
+      const desk = await open('desktop', s.auth ? 'A' : undefined, s.auth);
+      const vars: Record<string, string> = { ...env.identity(), marker: `OH${randomBytes(4).toString('hex').toUpperCase()}` };
+      if (s.setup) vars.id = await runSetup(desk, env.origin, s.setup, vars);
+      const url = new URL(expand(s.path, vars), env.origin).toString();
+      const visibleIn = async (page: Page) => {
+        await page.goto(url, { waitUntil: 'domcontentloaded' });
+        return Promise.all(s.controls.map(async (c) => page.getByRole(c.role, { name: c.label, exact: true }).first().isVisible().catch(() => false)));
+      };
+      const onDesktop = await visibleIn(desk);
+      const phone = await open('mobile', s.auth ? 'A' : undefined, s.auth);
+      const onPhone = await visibleIn(phone);
+      screenshots.push(await shot(phone, 'the same page on a 390x844 phone'));
+      if (onDesktop.some((v) => !v)) return { outcome: 'inconclusive', observed: `Not every control was visible on desktop in a fresh session (${s.controls.filter((_, i) => !onDesktop[i]).map((c) => `"${c.label}"`).join(', ')}), so the comparison cannot be made.`, details: { onDesktop, onPhone }, screenshots };
+      const gone = s.controls.filter((_, i) => !onPhone[i]);
+      return {
+        outcome: gone.length ? 'failed' : 'passed',
+        observed: gone.length ? `Reproduced in a fresh session: ${gone.map((c) => `${c.role} "${c.label}"`).join(', ')} ${gone.length === 1 ? 'is' : 'are'} visible on desktop but not on a 390x844 phone.` : 'Every compared control is visible on both desktop and a 390x844 phone.',
+        details: { controls: s.controls, onDesktop, onPhone },
+        screenshots,
+      };
+    }
+    if (s.kind === 'invariant') {
+      // A total over the account's records needs an account holding only this scenario's records: the
+      // shared replay account also holds other scenarios' records (a party of 0 hid a skipped row once).
+      // A handoff session cannot be replaced, so it keeps the owner's account.
+      const role = s.auth && s.auth.kind !== 'handoff' ? `invariant-${randomBytes(4).toString('hex')}` : 'A';
+      const page = await open(s.device, s.auth ? role : undefined, s.auth);
+      const vars: Record<string, string> = { ...env.identity(), marker: `OH${randomBytes(4).toString('hex').toUpperCase()}` };
+      for (const st of s.setups) await runSetup(page, env.origin, st, vars);
+      await page.goto(new URL(expand(s.path, vars), env.origin).toString(), { waitUntil: 'domcontentloaded' });
+      const v = judgeInvariant(s.invariant, { text: (await readView(page)).text, tables: await readTables(page) });
+      screenshots.push(await shot(page, 'page the invariant was checked on'));
+      return { outcome: v.outcome, observed: `${v.outcome === 'inconclusive' ? 'Cannot judge' : v.outcome === 'failed' ? 'Reproduced in a fresh session' : 'Held in a fresh session'}: ${v.detail}.`, details: { invariant: s.invariant, values: v.values, setups: s.setups.length }, screenshots };
+    }
 
     // mobile_reachability
     const page = await open('mobile', s.auth ? 'A' : undefined, s.auth);
@@ -501,8 +623,235 @@ async function replayBatch(
   return { outcome: 'blocked', observed: `Step ${last} has no expectation to judge.`, details: { checks }, screenshots };
 }
 
-/** A valid neighbouring case that must keep working (the control for a form_rule finding). */
-export function controlFor(s: Scenario, validValues: Record<string, string>): Scenario | null {
-  if (s.kind !== 'form_rule' || s.expectation !== 'rejected') return null;
+type ClaimScenario = Extract<Scenario, { kind: 'claim_check' }>;
+type Opener = (device: 'desktop' | 'mobile', role?: string, auth?: AuthRecipe) => Promise<Page>;
+const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const pathAndQuery = (url: string) => { const u = new URL(url); return `${u.pathname}${u.search}`; };
+
+/** The pauses of family 1's bounded window: one look now, two more later, summing to the window. */
+export function claimDelays(windowMs: number): number[] {
+  if (windowMs <= 0) return [0];
+  const first = Math.round(windowMs / 3);
+  return [0, first, windowMs - first];
+}
+
+/** Family 1 replay: run the save, confirm the claim appeared, then look for the saved values (bounded window). */
+async function replayClaim(s: ClaimScenario, open: Opener, env: ReplayEnv, screenshots: ReplayResult['screenshots']): Promise<ReplayResult> {
+  const marker = `OH${randomBytes(4).toString('hex').toUpperCase()}`;
+  const page = await open(s.device, s.auth ? 'A' : undefined, s.auth);
+  const vars: Record<string, string> = { ...env.identity(), marker };
+  if (s.setup) vars.id = await runSetup(page, env.origin, s.setup, vars);
+  await page.goto(new URL(expand(s.start, vars), env.origin).toString(), { waitUntil: 'domcontentloaded' });
+  for (const [i, step] of s.steps.entries()) {
+    try { await runStep(page, env.origin, step, vars); }
+    catch (e) {
+      if (e instanceof ReplayBlocked) throw new ReplayBlocked(`step ${i + 1} (${step.op}): ${e.message}`);
+      throw new ReplayBlocked(`step ${i + 1} (${step.op}) failed: ${(e as Error).message.split('\n')[0]!.slice(0, 160)}`);
+    }
+    await page.waitForTimeout(300);
+  }
+  await page.waitForLoadState('networkidle', { timeout: 4_000 }).catch(() => {});
+  const afterSave = await readView(page);
+  screenshots.push(await shot(page, 'after the save'));
+  if (s.claim !== null && !claimVisible(s.claim, afterSave.text)) {
+    return { outcome: 'inconclusive', observed: `The success message "${s.claim}" did not appear after the save in a fresh session, so the claim cannot be compared.`, details: { claim: s.claim }, screenshots };
+  }
+  vars.landed_id = recordIdsInUrl(page.url())[0] ?? '';
+  const paths = [pathAndQuery(page.url()), ...s.revisit.map((p) => expand(p, vars))];
+  const checks = s.checks.map((c) => ({ field: c.field, value: expand(c.value, vars) }));
+  const started = Date.now();
+  let verdict = judgePersistence(checks, []);
+  let looks = 0;
+  for (const delay of claimDelays(s.windowMs)) {
+    await pause(delay);
+    looks++;
+    const views: PageView[] = [];
+    for (const p of paths) {
+      await page.goto(new URL(p, env.origin).toString(), { waitUntil: 'domcontentloaded' });
+      views.push(await readView(page));
+    }
+    verdict = judgePersistence(checks, views);
+    if (!verdict.missing.length) break;
+  }
+  const windowUsedMs = Date.now() - started;
+  screenshots.push(await shot(page, 'record reopened'));
+  const where = paths.join(' and ');
+  return {
+    outcome: verdict.missing.length ? 'failed' : 'passed',
+    observed: verdict.missing.length
+      ? `${s.claim ? `The page said "${s.claim}", but after` : 'After'} reloading and reopening (${where}) over ${(windowUsedMs / 1000).toFixed(1)} s, ${verdict.missing.map((m) => `"${m.field}" = ${JSON.stringify(m.value.slice(0, 60))}`).join(', ')} ${verdict.missing.length === 1 ? 'was' : 'were'} not there.`
+      : `Every saved value was there again after reloading and reopening (${where}).`,
+    details: { claim: s.claim, found: verdict.found, missing: verdict.missing, paths, looks, windowUsedMs, windowMs: s.windowMs },
+    screenshots,
+  };
+}
+
+type CrossScenario = Extract<Scenario, { kind: 'cross_actor' }>;
+
+/** Family 2 replay: A creates the record; B opens exactly its URL and presses the controls it can see. */
+async function replayCrossActor(s: CrossScenario, open: Opener, env: ReplayEnv, screenshots: ReplayResult['screenshots']): Promise<ReplayResult> {
+  const marker = `OH${randomBytes(4).toString('hex').toUpperCase()}`;
+  const pageA = await open(s.device, 'A', s.auth);
+  const vars: Record<string, string> = { ...env.identity(), marker };
+  vars.id = await runSetup(pageA, env.origin, s.setup, vars);
+  const url = new URL(expand(s.path, vars), env.origin);
+  if (url.origin !== new URL(env.origin).origin) throw new ReplayBlocked('record path leaves the verified origin');
+  const protect = s.protect.flatMap((f) => (s.setup.fields[f] !== undefined ? [{ field: f, value: expand(s.setup.fields[f]!, vars) }] : []));
+  await pageA.goto(url.toString(), { waitUntil: 'domcontentloaded' });
+  const ownerView = await readView(pageA);
+  const pageB = await open(s.device, 'B', s.auth);
+  if (pageB.url() === 'about:blank') await pageB.goto(new URL(s.listPath ?? '/', env.origin).toString(), { waitUntil: 'domcontentloaded' });
+  const otherHome = await readView(pageB);
+  let otherList: PageView | undefined;
+  if (s.listPath) { await pageB.goto(new URL(expand(s.listPath, vars), env.origin).toString(), { waitUntil: 'domcontentloaded' }); otherList = await readView(pageB); }
+  const resp = await pageB.goto(url.toString(), { waitUntil: 'domcontentloaded' });
+  const otherView = await readView(pageB);
+  screenshots.push(await shot(pageB, 'second account opens the first account\'s record'));
+  const afterControls: { control: string; clicked: boolean; ownerAfter: PageView }[] = [];
+  for (const c of s.controls) {
+    await pageB.goto(url.toString(), { waitUntil: 'domcontentloaded' });
+    const loc = pageB.getByRole(c.role, { name: c.target, exact: true });
+    let clicked = false;
+    if (await loc.count()) {
+      await loc.first().click({ timeout: 5_000 }).then(() => { clicked = true; }, () => {});
+      await pageB.waitForLoadState('domcontentloaded').catch(() => {});
+    }
+    await pageA.goto(url.toString(), { waitUntil: 'domcontentloaded' });
+    afterControls.push({ control: c.target, clicked, ownerAfter: await readView(pageA) });
+  }
+  const v = judgeCrossActor(protect, { ownerView, otherHome, otherList, otherView, afterControls });
+  return {
+    outcome: v.outcome,
+    observed: v.outcome === 'inconclusive' ? `Cannot judge: ${v.detail}.` : `${v.detail} (HTTP ${resp?.status()}).`,
+    details: { recordPath: url.pathname, status: resp?.status(), privacyEstablished: v.privacyEstablished, leaked: v.leaked, changedBy: v.changedBy, controls: afterControls.map((c) => ({ control: c.control, clicked: c.clicked })) },
+    screenshots,
+  };
+}
+
+/**
+ * Fill a form and submit it with an ordinary user interruption (shared by exploration and replay).
+ * Offline is a client condition (context.setOffline), not proof of server behaviour under real network loss.
+ */
+export async function submitWithInterruption(page: Page, form: { fields: Record<string, string>; submit: string }, vars: Record<string, string>, kind: Interruption): Promise<{ claimedWhileOffline: boolean }> {
+  for (const [key, template] of Object.entries(form.fields)) await (await fieldLocator(page, key)).fill(expand(template, vars), { timeout: 5_000 });
+  const button = page.getByRole('button', { name: form.submit, exact: false }).first();
+  if (!(await button.count())) throw new ReplayBlocked(`submit not found: ${form.submit}`);
+  let claimedWhileOffline = false;
+  if (kind === 'double_submit') {
+    // An impatient second press while the first save is still in flight (a dblclick's second press
+    // would only cancel a submission the browser had not sent yet).
+    // Real mouse input at the button: Playwright's own click would wait for the first navigation.
+    await button.scrollIntoViewIfNeeded({ timeout: 5_000 });
+    const box = await button.boundingBox();
+    if (!box) throw new ReplayBlocked(`submit "${form.submit}" has no position on the page`);
+    const x = box.x + box.width / 2, y = box.y + box.height / 2;
+    await page.mouse.click(x, y);
+    await page.waitForTimeout(DOUBLE_PRESS_GAP_MS);
+    await page.mouse.click(x, y); // lands on the same button unless the page has already moved on
+  } else if (kind === 'offline_submit') {
+    await page.context().setOffline(true);
+    try {
+      await button.click({ timeout: 5_000, noWaitAfter: true }).catch(() => {});
+      await page.waitForTimeout(INTERRUPTION_SETTLE_MS);
+      claimedWhileOffline = (await page.locator('[role=status]:visible, .notice:visible, .success:visible, .toast:visible').count().catch(() => 0)) > 0 && !(await rejectionShown(page));
+    } finally { await page.context().setOffline(false); }
+  } else if (kind === 'reload_after_submit') {
+    await button.click({ timeout: 5_000, noWaitAfter: true });
+    await page.waitForTimeout(150);
+    await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
+  } else {
+    await button.click({ timeout: 5_000 });
+  }
+  await page.waitForTimeout(INTERRUPTION_SETTLE_MS);
+  await page.waitForLoadState('domcontentloaded').catch(() => {});
+  return { claimedWhileOffline };
+}
+
+type InterruptScenario = Extract<Scenario, { kind: 'interruption' }>;
+
+/** Family 4 replay: count the records the interrupted submit (plus at most one normal retry) created. */
+async function replayInterruption(s: InterruptScenario, open: Opener, env: ReplayEnv, screenshots: ReplayResult['screenshots']): Promise<ReplayResult> {
+  const page = await open(s.device, s.auth ? 'A' : undefined, s.auth);
+  const vars: Record<string, string> = { ...env.identity(), marker: `OH${randomBytes(4).toString('hex').toUpperCase()}` };
+  const value = expand(s.value, vars);
+  const list = new URL(expand(s.listPath, vars), env.origin).toString();
+  const count = async () => { await page.goto(list, { waitUntil: 'domcontentloaded' }); return occurrences((await readView(page)).text, value); };
+  const before = await count();
+  await page.goto(new URL(expand(s.form.path, vars), env.origin).toString(), { waitUntil: 'domcontentloaded' });
+  const { claimedWhileOffline } = await submitWithInterruption(page, s.form, vars, s.interruption);
+  screenshots.push(await shot(page, `after the ${s.interruption.replace(/_/g, ' ')}`));
+  const afterInterruption = await count();
+  let afterRetry: number | undefined;
+  if (afterInterruption === before && s.interruption !== 'none') {
+    await page.goto(new URL(expand(s.form.path, vars), env.origin).toString(), { waitUntil: 'domcontentloaded' });
+    await submitWithInterruption(page, s.form, vars, 'none');
+    afterRetry = await count();
+  }
+  screenshots.push(await shot(page, 'record list'));
+  const v = judgeInterruption({ kind: s.interruption, before, afterInterruption, afterRetry, claimedWhileOffline });
+  return { outcome: v.outcome, observed: `${v.outcome === 'failed' ? 'Reproduced in a fresh session' : v.outcome === 'passed' ? 'Held in a fresh session' : 'Cannot judge'}: ${v.detail}.`, details: { before, afterInterruption, afterRetry, claimedWhileOffline, created: v.created }, screenshots };
+}
+
+/** The submit button of the form a field belongs to. */
+async function submitOf(page: Page, field: string) {
+  const form = (await fieldLocator(page, field)).locator('xpath=ancestor::form[1]');
+  const button = form.locator('button[type=submit], input[type=submit], button:not([type])').first();
+  if (!(await button.count())) throw new ReplayBlocked(`no submit button in the form of "${field}"`);
+  return button;
+}
+
+/** One tab's edit: change one field and submit its form. Returns whether the page refused it. */
+export async function saveField(page: Page, field: string, value: string): Promise<boolean> {
+  await (await fieldLocator(page, field)).fill(value, { timeout: 5_000 });
+  await (await submitOf(page, field)).click({ timeout: 5_000 });
+  await page.waitForLoadState('domcontentloaded').catch(() => {});
+  return rejectionShown(page);
+}
+
+export async function fieldValue(page: Page, field: string): Promise<string> {
+  return (await fieldLocator(page, field)).inputValue({ timeout: 5_000 });
+}
+
+type TwoTabScenario = Extract<Scenario, { kind: 'two_tab' }>;
+
+/** Family 2 replay (two tabs): the second tab saves from an out-of-date page; nothing may be silently undone. */
+async function replayTwoTabs(s: TwoTabScenario, open: Opener, env: ReplayEnv, screenshots: ReplayResult['screenshots']): Promise<ReplayResult> {
+  const marker = `OH${randomBytes(4).toString('hex').toUpperCase()}`;
+  const tab1 = await open(s.device, s.auth ? 'A' : undefined, s.auth);
+  const vars: Record<string, string> = { ...env.identity(), marker };
+  vars.id = await runSetup(tab1, env.origin, s.setup, vars);
+  const url = new URL(expand(s.path, vars), env.origin).toString();
+  await tab1.goto(url, { waitUntil: 'domcontentloaded' });
+  const original = { first: await fieldValue(tab1, s.first.field), second: await fieldValue(tab1, s.second.field) };
+  const wanted = { first: expand(s.first.value, vars), second: expand(s.second.value, vars) };
+  let firstRejected: boolean, staleRejected: boolean;
+  if (s.sequential) {
+    firstRejected = await saveField(tab1, s.first.field, wanted.first);
+    await tab1.goto(url, { waitUntil: 'domcontentloaded' });
+    staleRejected = await saveField(tab1, s.second.field, wanted.second);
+  } else {
+    const tab2 = await tab1.context().newPage();
+    await tab2.goto(url, { waitUntil: 'domcontentloaded' });
+    firstRejected = await saveField(tab1, s.first.field, wanted.first);
+    staleRejected = await saveField(tab2, s.second.field, wanted.second);
+    screenshots.push(await shot(tab2, 'out-of-date tab after its save'));
+  }
+  await tab1.goto(url, { waitUntil: 'domcontentloaded' });
+  const final = { first: await fieldValue(tab1, s.first.field), second: await fieldValue(tab1, s.second.field) };
+  screenshots.push(await shot(tab1, 'record reopened'));
+  const v = judgeTwoTabs({ original, wanted, firstRejected, staleRejected, final });
+  return {
+    outcome: v.outcome,
+    observed: `${s.sequential ? 'One tab, one save after the other' : 'Two tabs on the same record'}: ${v.detail}.`,
+    details: { original, wanted, final, firstRejected, staleRejected, sequential: s.sequential },
+    screenshots,
+  };
+}
+
+/** A valid neighbouring case that must keep working (the control for a form_rule or two_tab finding). */
+export function controlFor(s: Scenario, validValues?: Record<string, string>): Scenario | null {
+  if (s.kind === 'two_tab' && !s.sequential) return { ...s, sequential: true };
+  if (s.kind === 'interruption' && s.interruption !== 'none') return { ...s, interruption: 'none' };
+  if (s.kind !== 'form_rule' || s.expectation !== 'rejected' || !validValues) return null;
   return { ...s, form: { ...s.form, fields: { ...s.form.fields, ...validValues } }, expectation: 'accepted' };
 }
