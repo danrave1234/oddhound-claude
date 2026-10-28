@@ -25,7 +25,7 @@ This is an honest record of what was built, what was actually tested, and what i
 
 | Suite | Command | Result |
 |---|---|---|
-| Unit + integration (SSRF policy, egress proxy incl. rebinding and byte/request caps, scope decisions, ownership verification against a live server, ledgers under races, fencing, durable events, report fencing, export template, scenario soundness, credential vault, detectors, scout, stated rules, scenario batches through the worker pipeline, batch retest) | `pnpm test` | **167/167 pass** (Oct 28, branch `behavioral-families` rebased on main ce3e2ef) |
+| Unit + integration (SSRF policy, egress proxy incl. rebinding and byte/request caps, scope decisions, ownership verification against a live server, ledgers under races, fencing, durable events, report fencing, export template, scenario soundness, credential vault, detectors, scout, stated rules, scenario batches through the worker pipeline, batch retest) | `pnpm test` | **169/169 pass** (Oct 28, branch `behavioral-families` rebased on main f5e7655) |
 | End-to-end lab, offline test double (deterministic, no paid calls) | `node --env-file=.env tests/e2e/run-e2e.ts` | **all checks pass** (Oct 28, default batch mode, incl. the five behavioral families) |
 | End-to-end lab, real Meta model | `E2E_PROVIDER=meta node --env-file=.env tests/e2e/run-e2e.ts` | see §3 |
 | HTTP tenant isolation (SELF-04) against the running web app | `node --env-file=.env tests/e2e/web-access.ts` | **13/13 pass** |
