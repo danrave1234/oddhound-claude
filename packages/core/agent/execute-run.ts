@@ -985,23 +985,34 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
       }
       const bound = inputTokenBound(messages, toolsJson);
       const reserve = reservationMicros(price, bound, LIMITS.maxOutputTokens);
-      const requestKey = `${runId}:turn:${turns}`;
+      let requestKey = `${runId}:turn:${turns}`;
       const r = await reserveSpend(db, { runId, account: a.run.spend_account, requestKey, micros: reserve, provider: provider.id, model: provider.model });
       if (!r.ok) { await ev('budget.denied', { reason: r.reason, attemptedMicros: reserve }); return { stopReason: `budget_${r.reason}` }; }
       let result;
       try {
-        // Meta intermittently answers `model_not_found` (HTTP 404, not billed) from some cloud networks
-        // while the same model works moments later. Retry only that answer, a bounded number of times,
-        // and log every attempt (spec: retries are explicit, never hidden).
+        // Retries are explicit and budgeted (spec): every attempt is logged. Meta intermittently answers
+        // `model_not_found` (HTTP 404, not billed) from some cloud networks, and occasionally a server error,
+        // rate limit or timeout that clears moments later. An attempt that may have been billed keeps its
+        // reservation counted as unknown spend, and the retry reserves again, so the per-run cap still holds.
+        let serverRetries = 0;
         for (let attempt = 1; ; attempt++) {
           try {
             result = await provider.chat({ messages, tools, maxOutputTokens: LIMITS.maxOutputTokens, temperature: 0.2, signal: abort.signal });
             break;
           } catch (e) {
-            const transient = e instanceof ProviderError && e.status === 404 && !e.maybeBilled && /model_not_found/.test(e.message);
-            if (!transient || attempt >= 8 || abort.signal.aborted) throw e;
-            await ev('provider.retry', { provider: provider.id, attempt, reason: 'model_not_found', billed: false });
-            await sleep(Math.min(4_000, 600 * attempt));
+            if (!(e instanceof ProviderError) || abort.signal.aborted) throw e;
+            const notFound = e.status === 404 && !e.maybeBilled && /model_not_found/.test(e.message);
+            const passing = (e.kind === 'http' && (e.status === 429 || (e.status ?? 0) >= 500)) || e.kind === 'timeout' || e.kind === 'network';
+            if (notFound ? attempt >= 8 : !passing || serverRetries >= 3) throw e;
+            if (passing) serverRetries++;
+            await ev('provider.retry', { provider: provider.id, attempt, reason: notFound ? 'model_not_found' : e.status ? `http_${e.status}` : e.kind, billed: e.maybeBilled });
+            if (e.maybeBilled) {
+              await markSpendUnknown(db, requestKey);
+              requestKey = `${runId}:turn:${turns}:retry${attempt}`;
+              const again = await reserveSpend(db, { runId, account: a.run.spend_account, requestKey, micros: reserve, provider: provider.id, model: provider.model });
+              if (!again.ok) { await ev('budget.denied', { reason: again.reason, attemptedMicros: reserve }); return { stopReason: `budget_${again.reason}` }; }
+            }
+            await sleep(notFound ? Math.min(4_000, 600 * attempt) : [2_000, 5_000, 10_000][serverRetries - 1]!);
           }
         }
       } catch (e) {
