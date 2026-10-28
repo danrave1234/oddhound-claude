@@ -140,8 +140,15 @@ export async function executeRun(deps: ExecuteDeps, runId: string): Promise<RunS
     if (run.mode === 'demo_target' || (run.mode === 'retest' && contract.target.verification.kind === 'demo_target')) {
       const resetUrl = contract.target.origin === process.env.DEMO_TARGET_FIXED_ORIGIN ? process.env.DEMO_TARGET_FIXED_RESET_URL : process.env.DEMO_TARGET_RESET_URL;
       if (resetUrl) {
-        const ok = await fetch(resetUrl, { method: 'POST', headers: { 'x-lab-reset-token': process.env.ODDHOUND_FIXTURE_RESET_TOKEN ?? '' }, signal: AbortSignal.timeout(5_000) }).then((r) => r.ok, () => false);
-        await ev(ok ? 'fixture.reset' : 'fixture.reset_failed', { target: 'demo' });
+        // A scale-to-zero host may take several seconds to wake, so allow 30 s and one retry. The failure records why.
+        let ok = false; let why = '';
+        for (let attempt = 1; attempt <= 2 && !ok; attempt++) {
+          const r = await fetch(resetUrl, { method: 'POST', headers: { 'x-lab-reset-token': process.env.ODDHOUND_FIXTURE_RESET_TOKEN ?? '' }, signal: AbortSignal.timeout(30_000) })
+            .then((res) => ({ ok: res.ok, why: `HTTP ${res.status}` }), (e: Error) => ({ ok: false, why: e.name === 'TimeoutError' ? 'timed out after 30 s' : 'unreachable' }));
+          ok = r.ok; why = r.why;
+          if (!ok && why.startsWith('HTTP 4')) break; // a wrong token will not fix itself
+        }
+        await ev(ok ? 'fixture.reset' : 'fixture.reset_failed', ok ? { target: 'demo' } : { target: 'demo', reason: why });
         if (!ok) { await finish('blocked', 'demo_target_reset_failed'); return await done(); }
       }
     }
