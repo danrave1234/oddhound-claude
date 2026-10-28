@@ -32,8 +32,8 @@ import { findByLabel, usesRef } from './by-label.ts';
 import { blockedReason, disabledReason } from '../browser/click-check.ts';
 import { readSiteMap } from '../browser/site-map.ts';
 import { runHandoff, HandoffEnded } from './handoff.ts';
-import { CLICK_ROLES, controlFor, fillAndSubmit, newReplaySessions, recordIdsInUrl, replayScenario, scenarioDefect, scenarioHash, type Setup, type AuthRecipe, type Oracle, type ReplayEnv, type Scenario, type TraceStep } from '../verifier/scenario.ts';
-import { CLAIM_RETRY_DELAYS_MS, CLAIM_WINDOW_MS, claimVisible, distinctiveValues, judgeCrossActor, judgePersistence, readView, swapId, type Family, type PageView } from '../verifier/behavior.ts';
+import { CLICK_ROLES, controlFor, fieldValue, fillAndSubmit, saveField, newReplaySessions, recordIdsInUrl, replayScenario, scenarioDefect, scenarioHash, type Setup, type AuthRecipe, type Oracle, type ReplayEnv, type Scenario, type TraceStep } from '../verifier/scenario.ts';
+import { CLAIM_RETRY_DELAYS_MS, CLAIM_WINDOW_MS, claimVisible, distinctiveValues, judgeCrossActor, judgePersistence, judgeTwoTabs, readView, swapId, type Family, type PageView } from '../verifier/behavior.ts';
 
 export type ExecuteDeps = {
   db: Db;
@@ -773,6 +773,64 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
     return `Cross-actor check FAILED: ${v.detail}.${offered} Recorded as a candidate${v.privacyEstablished ? '' : ' for review (privacy not established)'}; Oddhound will replay it with two fresh accounts. You are actor A again.${afterCheck()}`;
   };
 
+  /** Family 2 (same actor, two tabs): a save from an out-of-date tab must not silently undo the other tab's. */
+  const checkTwoTabs = async (args: { path: string; first: { field: string; value: string }; second: { field: string; value: string }; rule_id?: string }): Promise<string> => {
+    const refusal = pathRefusal(args.path);
+    if (refusal) return `${args.path} is ${refusal}.`;
+    const ids = recordIdsInUrl(new URL(args.path, session.origin).toString());
+    const mine = [...(recorded.creators?.entries() ?? [])].filter(([, c]) => c.actor === session.actor).map(([id]) => id);
+    if (!ids.length || ids.some((id) => !mine.includes(id))) return `Use the edit page of a record actor ${session.actor} created in this run (records: ${mine.slice(0, 8).join(', ') || 'none yet'}); ids are never guessed.`;
+    if (!writesPermitted(contract) || !contract.capabilities.editRecords) return 'Editing records is not permitted by this run contract.';
+    const id = ids[0]!;
+    await ev('scenario.started', { family: 'two_actors', check: 'two_tabs', path: args.path });
+    await openPath(args.path, 'Two-tab check, first tab');
+    const tab1 = await session.page();
+    const labels = new Set(session.lastObservation?.elements.filter((e) => e.kind === 'input' || e.kind === 'textarea' || e.kind === 'select').map((e) => e.label) ?? []);
+    const first = { field: closestLabel(args.first.field, labels), value: args.first.value };
+    const second = { field: closestLabel(args.second.field, labels), value: args.second.value };
+    const unknown = [first.field, second.field].filter((f) => !labels.has(f));
+    if (unknown.length || first.field === second.field) return `Give two different field labels of the form on ${args.path}. Labels there: ${[...labels].map((l) => JSON.stringify(l)).join(', ')}.`;
+    const tab2 = await tab1.context().newPage();
+    tab2.on('dialog', (d) => { void d.dismiss().catch(() => {}); });
+    try {
+      let failure: string | null = null;
+      const step = async (desc: string, args2: Record<string, unknown>, fn: () => Promise<void>) => {
+        await runBrowserAction('second_tab', args2, desc, fn, { quiet: true });
+        failure ??= (lastStep as StepInfo | null)?.error ?? null;
+      };
+      await step('Opened the same page in a second tab', { tab: 2, path: args.path }, async () => { await tab2.goto(new URL(args.path, session.origin).toString(), { waitUntil: 'domcontentloaded' }); });
+      const original = { first: await fieldValue(tab1, first.field), second: await fieldValue(tab1, second.field) };
+      let firstRejected = false, staleRejected = false;
+      await step(`First tab: changed "${first.field}" and saved`, { tab: 1, field: first.field, value: first.value }, async () => { firstRejected = await saveField(tab1, first.field, first.value); });
+      await step(`Second (out-of-date) tab: changed "${second.field}" and saved`, { tab: 2, field: second.field, value: second.value }, async () => { staleRejected = await saveField(tab2, second.field, second.value); });
+      await openPath(args.path, 'Two-tab check, reopened the record');
+      const final = { first: await fieldValue(await session.page(), first.field), second: await fieldValue(await session.page(), second.field) };
+      if (failure) {
+        await ev('scenario.finished', { family: 'two_actors', check: 'two_tabs', outcome: 'inconclusive', reason: failure });
+        return `Two-tab check could not run: ${failure}.${afterCheck()}`;
+      }
+      const v = judgeTwoTabs({ original, wanted: { first: first.value, second: second.value }, firstRejected, staleRejected, final });
+      await ev('scenario.finished', { family: 'two_actors', check: 'two_tabs', outcome: v.outcome, path: args.path, original, final, staleRejected });
+      if (v.outcome !== 'failed') return `Two-tab check ${v.outcome}: ${v.detail}.${v.outcome === 'passed' ? ' No finding.' : ''}${afterCheck()}`;
+      const explicit = contract.rules.find((r) => r.id === args.rule_id && r.source !== 'baseline');
+      const scenario: Scenario = {
+        kind: 'two_tab', device: session.device, ...(recorded.auth ? { auth: recorded.auth } : {}), setup: recorded.createdBy!.get(id)!, path: swapId(args.path, id, '{id}'),
+        first: { field: first.field, value: asTemplateValue(first.value) }, second: { field: second.field, value: asTemplateValue(second.value) }, sequential: false, expectation: 'no_lost_update',
+      };
+      const title = `Saving from an out-of-date tab silently undoes "${first.field}" saved in another tab`;
+      candidates.push({
+        title: title.slice(0, 140), ruleId: explicit?.id ?? 'lost_update', impact: 'medium', observed: `Two tabs on ${args.path}: ${v.detail}.`.slice(0, 500), scenario, actor: session.actor, device: session.device, source: 'agent', family: 'two_actors',
+        ...(explicit ? {} : { hypothesis: 'A save from an out-of-date page should be refused or merged rather than silently undo a change saved from another tab. Last-write-wins may be intended; no explicit or owner-approved rule says otherwise.' }),
+        contexts: `actor ${session.actor}, two tabs of one ${session.device} session; control: the same two edits one after the other in one tab`,
+        limitations: 'Two tabs of one browser session on a record created in this run. Two separate devices or accounts editing at the same moment were not tested.',
+      });
+      await ev('finding.candidate', { title, ruleId: explicit?.id ?? null, kind: 'two_tab', source: 'agent', family: 'two_actors' });
+      return `Two-tab check FAILED: ${v.detail}. Recorded as a candidate${explicit ? ` against ${explicit.id}` : ' for review (no explicit rule; give rule_id when an owner rule covers it)'}; Oddhound will replay it with a one-tab control.${afterCheck()}`;
+    } finally {
+      await tab2.close().catch(() => {});
+    }
+  };
+
   const dispatch = async (call: ToolCall): Promise<{ text: string; image?: Buffer }> => {
     const name = call.function.name as ToolName;
     const schema = ToolArgs[name];
@@ -955,9 +1013,12 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
         return { text: await checkClaim(args as { claim?: string; fields: string[]; revisit_path?: string }) };
       case 'check_cross_actor':
         return { text: await checkCrossActor(args as { path: string; try_controls?: string[] }) };
+      case 'check_two_tabs':
+        return { text: await checkTwoTabs(args as Parameters<typeof checkTwoTabs>[0]) };
       case 'report_candidate': {
-        if (args.scenario.kind === 'claim_check' || args.scenario.kind === 'cross_actor') {
-          return { text: `Do not write ${args.scenario.kind} scenarios yourself: call ${args.scenario.kind === 'claim_check' ? 'check_claim' : 'check_cross_actor'}; Oddhound records the candidate from what it observes.` };
+        if (args.scenario.kind === 'claim_check' || args.scenario.kind === 'cross_actor' || args.scenario.kind === 'two_tab') {
+          const tool = ({ claim_check: 'check_claim', cross_actor: 'check_cross_actor', two_tab: 'check_two_tabs' } as Record<string, string>)[args.scenario.kind as string];
+          return { text: `Do not write ${args.scenario.kind} scenarios yourself: call ${tool}; Oddhound records the candidate from what it observes.` };
         }
         if (args.scenario.kind === 'batch' && 'steps' in args.scenario) {
           return { text: 'Do not write batch steps yourself. Give {"kind":"batch","batch":N,"step":K}; Oddhound builds the steps from its own record.' };
@@ -1284,7 +1345,7 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
 }
 
 /** Browser actions Oddhound takes itself for a behavioral check (ledgered like the model's own). */
-type InternalTool = 'sign_up_actor';
+type InternalTool = 'sign_up_actor' | 'second_tab';
 
 class LimitReached extends Error { readonly reason: string; constructor(reason: string) { super(reason); this.reason = reason; } }
 
@@ -1482,7 +1543,7 @@ async function verifyCandidates(v: { db: Db; runId: string; generation: number; 
       limitations = `Reproduced 2/2, but no explicit or owner-approved rule covers it, so it is for review, not a verified issue: ${c.hypothesis ?? 'actor B\'s own list also showed the record, so it may be public by design.'}`;
     } else if (outcomes.every((o) => o === 'failed')) {
       verification = 'verified'; category = 'verified_issue';
-      const control = c.controlValues ? controlFor(c.scenario, c.controlValues) : null;
+      const control = controlFor(c.scenario, c.controlValues);
       if (control) {
         const ctl = await replayScenario(control, env);
         controlScenarioId = await saveScenario(db, runId, run.project_id, c, control, true, scenarioId, rule.text, rule.source);

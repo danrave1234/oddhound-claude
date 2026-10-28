@@ -45,6 +45,7 @@ export function systemPrompt(c: RunContract, mode: AgentMode = 'steps'): string 
     ...(c.capabilities.crossAccountRead && !c.handoff.enabled ? [
       '- Two actors: after actor A has created a record with distinctive free text, call check_cross_actor with that record\'s page (and its edit page in a second call), and try_controls with the visible actions on it (e.g. "Cancel booking"). Oddhound signs up actor B itself; you do not need use_actor or a second create_identity for this. Never give an id this run did not create.',
     ] : []),
+    ...(writes ? ['- Two tabs: for a record you created that has an edit form, call check_two_tabs with two different fields and new values (lost updates from an out-of-date page). Cite an owner rule in rule_id only if one covers it.'] : []),
     '',
     'Hard rules (enforced by Oddhound outside your control, so do not try to work around them):',
     `- You may only act on ${c.target.origin}. Other sites are off limits.`,

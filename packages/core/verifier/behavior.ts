@@ -130,6 +130,43 @@ export function judgeCrossActor(protect: PersistCheck[], f: CrossActorFacts): Cr
   return { outcome: 'failed', privacyEstablished, leaked, changedBy, detail: parts.join('; ') };
 }
 
+export type TwoTabFacts = {
+  /** Values of the two fields when both tabs opened the record. */
+  original: { first: string; second: string };
+  wanted: { first: string; second: string };
+  /** The first tab's save was refused (then nothing can be judged). */
+  firstRejected: boolean;
+  /** The out-of-date tab's save was refused with a visible message. */
+  staleRejected: boolean;
+  /** The record reopened afterwards. */
+  final: { first: string; second: string };
+};
+
+/**
+ * Family 2 (same actor, two tabs): two edits of different fields of one record. A save from the stale
+ * tab may be refused or merged; it must not silently put back the value the other tab just changed.
+ */
+export function judgeTwoTabs(f: TwoTabFacts): { outcome: 'passed' | 'failed' | 'inconclusive'; detail: string } {
+  const same = (a: string, b: string) => norm(a) === norm(b);
+  if (same(f.original.first, f.wanted.first) || same(f.original.second, f.wanted.second)) return { outcome: 'inconclusive', detail: 'a new value equals the old one, so a lost change could not be seen' };
+  if (f.firstRejected) return { outcome: 'inconclusive', detail: 'the first tab\'s save was refused, so there was no change to lose' };
+  if (f.staleRejected) {
+    return same(f.final.first, f.wanted.first)
+      ? { outcome: 'passed', detail: 'the out-of-date tab\'s save was refused with a message, and the first tab\'s change was kept' }
+      : { outcome: 'inconclusive', detail: 'the out-of-date tab\'s save was refused, but the first tab\'s change is not there either' };
+  }
+  if (same(f.final.first, f.wanted.first) && same(f.final.second, f.wanted.second)) return { outcome: 'passed', detail: 'both tabs\' changes were kept' };
+  if (same(f.final.second, f.wanted.second) && same(f.final.first, f.original.first)) {
+    return { outcome: 'failed', detail: `the change saved in the first tab was silently undone: the save from the out-of-date tab put back ${JSON.stringify(f.original.first.slice(0, 60))} with no message` };
+  }
+  return { outcome: 'inconclusive', detail: `the record ended in an unexpected state (${JSON.stringify(f.final.first.slice(0, 40))}, ${JSON.stringify(f.final.second.slice(0, 40))})` };
+}
+
+/** Whether a page shows that the last submit was refused: an error message or a field marked invalid. */
+export async function rejectionShown(page: Page): Promise<boolean> {
+  return (await page.locator('[role=alert]:visible, .error:visible, .invalid-feedback:visible, :user-invalid').count().catch(() => 0)) > 0;
+}
+
 /** Swap one record number in a path for a template variable. */
 export function swapId(path: string, id: string, to: string): string {
   const [p, q] = path.split('?', 2) as [string, string | undefined];

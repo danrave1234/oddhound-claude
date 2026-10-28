@@ -11,7 +11,7 @@ import type { BrowserContext, Page } from 'playwright';
 import { canonicalJson, sha256 } from '../ledger/runs.ts';
 import { attachSentinels, checkPage, describeSignal, routeOf, type Signal } from '../browser/sentinels.ts';
 import { ExpectSchema, judgeExpectation, pageFacts } from './expect.ts';
-import { claimVisible, judgeCrossActor, judgePersistence, readView, type PageView } from './behavior.ts';
+import { claimVisible, judgeCrossActor, judgePersistence, judgeTwoTabs, readView, rejectionShown, type PageView } from './behavior.ts';
 
 const Template = z.string().max(200);
 const FieldMap = z.record(z.string().min(1).max(80), Template).refine((m) => Object.keys(m).length > 0 && Object.keys(m).length <= 12, 'between 1 and 12 fields');
@@ -121,6 +121,20 @@ export const ScenarioSchema = z.discriminatedUnion('kind', [
     protect: z.array(z.string().min(1).max(80)).min(1).max(4),
     controls: z.array(z.object({ target: z.string().min(1).max(120), role: z.enum(['button', 'link']) })).max(2),
     expectation: z.literal('denied'),
+  }),
+  // Family 2, same actor in two tabs: both tabs open the record's edit form, the first saves a change
+  // to one field, then the out-of-date second tab saves a change to another. `sequential` is the
+  // neighbouring control: the same two edits one after the other in one tab.
+  z.object({
+    kind: z.literal('two_tab'),
+    device: z.enum(['desktop', 'mobile']),
+    auth: AuthRecipeSchema.optional(),
+    setup: SetupSchema,
+    path: z.string().startsWith('/').max(300),
+    first: z.object({ field: z.string().min(1).max(80), value: z.string().min(1).max(200) }),
+    second: z.object({ field: z.string().min(1).max(80), value: z.string().min(1).max(200) }),
+    sequential: z.boolean(),
+    expectation: z.literal('no_lost_update'),
   }),
 ]);
 export type Scenario = z.infer<typeof ScenarioSchema>;
@@ -337,6 +351,7 @@ export async function replayScenario(s: Scenario, env: ReplayEnv): Promise<Repla
     if (s.kind === 'batch') return await replayBatch(s, open, env, screenshots);
     if (s.kind === 'claim_check') return await replayClaim(s, open, env, screenshots);
     if (s.kind === 'cross_actor') return await replayCrossActor(s, open, env, screenshots);
+    if (s.kind === 'two_tab') return await replayTwoTabs(s, open, env, screenshots);
 
     // mobile_reachability
     const page = await open('mobile', s.auth ? 'A' : undefined, s.auth);
@@ -641,8 +656,65 @@ async function replayCrossActor(s: CrossScenario, open: Opener, env: ReplayEnv, 
   };
 }
 
-/** A valid neighbouring case that must keep working (the control for a form_rule finding). */
-export function controlFor(s: Scenario, validValues: Record<string, string>): Scenario | null {
-  if (s.kind !== 'form_rule' || s.expectation !== 'rejected') return null;
+/** The submit button of the form a field belongs to. */
+async function submitOf(page: Page, field: string) {
+  const form = (await fieldLocator(page, field)).locator('xpath=ancestor::form[1]');
+  const button = form.locator('button[type=submit], input[type=submit], button:not([type])').first();
+  if (!(await button.count())) throw new ReplayBlocked(`no submit button in the form of "${field}"`);
+  return button;
+}
+
+/** One tab's edit: change one field and submit its form. Returns whether the page refused it. */
+export async function saveField(page: Page, field: string, value: string): Promise<boolean> {
+  await (await fieldLocator(page, field)).fill(value, { timeout: 5_000 });
+  await (await submitOf(page, field)).click({ timeout: 5_000 });
+  await page.waitForLoadState('domcontentloaded').catch(() => {});
+  return rejectionShown(page);
+}
+
+export async function fieldValue(page: Page, field: string): Promise<string> {
+  return (await fieldLocator(page, field)).inputValue({ timeout: 5_000 });
+}
+
+type TwoTabScenario = Extract<Scenario, { kind: 'two_tab' }>;
+
+/** Family 2 replay (two tabs): the second tab saves from an out-of-date page; nothing may be silently undone. */
+async function replayTwoTabs(s: TwoTabScenario, open: Opener, env: ReplayEnv, screenshots: ReplayResult['screenshots']): Promise<ReplayResult> {
+  const marker = `OH${randomBytes(4).toString('hex').toUpperCase()}`;
+  const tab1 = await open(s.device, s.auth ? 'A' : undefined, s.auth);
+  const vars: Record<string, string> = { ...env.identity(), marker };
+  vars.id = await runSetup(tab1, env.origin, s.setup, vars);
+  const url = new URL(expand(s.path, vars), env.origin).toString();
+  await tab1.goto(url, { waitUntil: 'domcontentloaded' });
+  const original = { first: await fieldValue(tab1, s.first.field), second: await fieldValue(tab1, s.second.field) };
+  const wanted = { first: expand(s.first.value, vars), second: expand(s.second.value, vars) };
+  let firstRejected: boolean, staleRejected: boolean;
+  if (s.sequential) {
+    firstRejected = await saveField(tab1, s.first.field, wanted.first);
+    await tab1.goto(url, { waitUntil: 'domcontentloaded' });
+    staleRejected = await saveField(tab1, s.second.field, wanted.second);
+  } else {
+    const tab2 = await tab1.context().newPage();
+    await tab2.goto(url, { waitUntil: 'domcontentloaded' });
+    firstRejected = await saveField(tab1, s.first.field, wanted.first);
+    staleRejected = await saveField(tab2, s.second.field, wanted.second);
+    screenshots.push(await shot(tab2, 'out-of-date tab after its save'));
+  }
+  await tab1.goto(url, { waitUntil: 'domcontentloaded' });
+  const final = { first: await fieldValue(tab1, s.first.field), second: await fieldValue(tab1, s.second.field) };
+  screenshots.push(await shot(tab1, 'record reopened'));
+  const v = judgeTwoTabs({ original, wanted, firstRejected, staleRejected, final });
+  return {
+    outcome: v.outcome,
+    observed: `${s.sequential ? 'One tab, one save after the other' : 'Two tabs on the same record'}: ${v.detail}.`,
+    details: { original, wanted, final, firstRejected, staleRejected, sequential: s.sequential },
+    screenshots,
+  };
+}
+
+/** A valid neighbouring case that must keep working (the control for a form_rule or two_tab finding). */
+export function controlFor(s: Scenario, validValues?: Record<string, string>): Scenario | null {
+  if (s.kind === 'two_tab' && !s.sequential) return { ...s, sequential: true };
+  if (s.kind !== 'form_rule' || s.expectation !== 'rejected' || !validValues) return null;
   return { ...s, form: { ...s.form, fields: { ...s.form.fields, ...validValues } }, expectation: 'accepted' };
 }

@@ -91,6 +91,9 @@ class ScriptedPlanner implements ChatProvider {
       call('check_cross_actor', { path: '/bookings/1', try_controls: ['Cancel booking'] }),
       call('check_cross_actor', { path: '/bookings/1/edit' }),
       call('check_cross_actor', { path: '/bookings/2' }),
+      // Family 2, two tabs: once against demo rule R6, once with no rule (it can only be needs_review).
+      call('check_two_tabs', { path: '/bookings/1/edit', first: { field: 'Guest name', value: 'Two Tab Guest A1' }, second: { field: 'Party size', value: '5' }, rule_id: 'R6' }),
+      call('check_two_tabs', { path: '/bookings/1/edit', first: { field: 'Guest name', value: 'Second Tab Guest B2' }, second: { field: 'Party size', value: '6' } }),
       call('finish_run', { summary: 'Checked two save claims and cross-account access to a booking.' }),
     ];
     const next = steps[this.#turn++] ?? call('finish_run', { summary: 'done' });
@@ -107,7 +110,7 @@ const deps = (provider: ChatProvider) => ({
 });
 
 describe('behavioral families 1 and 2 on the Harbor demo target', () => {
-  it('finds the lying save toast and the cross-account gap, leaves the controls alone, and retests them unchanged', async () => {
+  it('finds the lying save toast, the cross-account gap and the lost update, leaves the controls alone, and retests them unchanged', async () => {
     await db.query('TRUNCATE runs CASCADE');
     const planner = new ScriptedPlanner();
     const principal = `test:families:${Date.now()}`;
@@ -131,7 +134,8 @@ describe('behavioral families 1 and 2 on the Harbor demo target', () => {
 
     const events = (await db.query<{ type: string; payload: any }>('SELECT type, payload FROM run_events WHERE run_id = $1 ORDER BY seq', [runId])).rows;
     const finished = events.filter((e) => e.type === 'scenario.finished').map((e) => `${e.payload.family}:${e.payload.outcome}`);
-    expect(finished).toEqual(['claim_vs_truth:passed', 'claim_vs_truth:failed', 'two_actors:failed', 'two_actors:passed']);
+    expect(finished).toEqual(['claim_vs_truth:passed', 'claim_vs_truth:failed', 'two_actors:failed', 'two_actors:passed', 'two_actors:failed', 'two_actors:failed']);
+    expect(reply(/^Two-tab check FAILED/)).toMatch(/the change saved in the first tab was silently undone: the save from the out-of-date tab put back "Harbor Guest Q7 Edited"/);
     const window = events.find((e) => e.type === 'scenario.finished' && e.payload.outcome === 'failed' && e.payload.family === 'claim_vs_truth')!.payload;
     expect(window).toMatchObject({ looks: 3, windowMs: 4_500 });
     expect(window.windowUsedMs).toBeGreaterThanOrEqual(4_500);
@@ -142,9 +146,17 @@ describe('behavioral families 1 and 2 on the Harbor demo target', () => {
     expect(JSON.stringify(actions)).not.toMatch(/Oh!|password":"[^{]/); // no secrets in the ledger
 
     // Verification: both replayed twice in fresh sessions and verified; nothing else was flagged.
-    const findings = (await db.query<{ id: string; rule_id: string; family: string; verification: string; category: string; lifecycle: string; scenario_id: string; limitations: string; actor: string }>(
+    const findings = (await db.query<{ id: string; rule_id: string | null; family: string; verification: string; category: string; lifecycle: string; scenario_id: string; limitations: string; actor: string }>(
       `SELECT id, rule_id, family, verification, category, lifecycle, scenario_id, limitations, actor FROM findings WHERE run_id = $1 AND category <> 'configuration_observation' ORDER BY rule_id`, [runId])).rows;
-    expect(findings.map((f) => `${f.rule_id}:${f.family}:${f.verification}:${f.category}`)).toEqual(['B11:claim_vs_truth:verified:verified_issue', 'B7:two_actors:verified:verified_issue']);
+    expect(findings.map((f) => `${f.rule_id ?? 'null'}:${f.family}:${f.verification}:${f.category}`)).toEqual([
+      'B11:claim_vs_truth:verified:verified_issue', 'B7:two_actors:verified:verified_issue', 'R6:two_actors:verified:verified_issue', 'null:two_actors:inconclusive:needs_review',
+    ]);
+    // The rule-less two-tab check reproduced, but no explicit rule backs it: review only, never verified.
+    expect(findings.find((f) => f.rule_id === null)!.limitations).toMatch(/Reproduced 2\/2, but no explicit or owner-approved rule/);
+    // The one-tab control ran next to the verified two-tab finding and passed.
+    const r6 = (await db.query<{ control_scenario_id: string | null }>(`SELECT control_scenario_id FROM findings WHERE run_id = $1 AND rule_id = 'R6'`, [runId])).rows[0]!;
+    const ctl = (await db.query<{ assertion: any; outcome: string }>(`SELECT s.assertion, e.outcome FROM scenarios s JOIN scenario_executions e ON e.scenario_id = s.id WHERE s.id = $1`, [r6.control_scenario_id])).rows;
+    expect(ctl.map((c) => [c.assertion.sequential, c.outcome])).toEqual([[true, 'passed']]);
     const b11 = findings.find((f) => f.rule_id === 'B11')!;
     expect(b11.limitations).toMatch(/4\.5 s window \(exploration used \d+\.\d s over 3 looks\)/);
     expect(findings.find((f) => f.rule_id === 'B7')!).toMatchObject({ actor: 'A+B' });
@@ -157,7 +169,7 @@ describe('behavioral families 1 and 2 on the Harbor demo target', () => {
     if (!retest.ok) throw new Error(retest.reason);
     expect(await executeRun(deps(new ScriptedPlanner()), retest.runId)).toBe('completed');
     const after = (await db.query<{ rule_id: string; lifecycle: string }>(`SELECT rule_id, lifecycle FROM findings WHERE run_id = $1 AND category = 'verified_issue' ORDER BY rule_id`, [runId])).rows;
-    expect(after).toEqual([{ rule_id: 'B11', lifecycle: 'fixed' }, { rule_id: 'B7', lifecycle: 'fixed' }]);
+    expect(after).toEqual([{ rule_id: 'B11', lifecycle: 'fixed' }, { rule_id: 'B7', lifecycle: 'fixed' }, { rule_id: 'R6', lifecycle: 'fixed' }]);
 
     // Retest on the still-vulnerable build keeps both open (no false "fixed").
     await db.query(`UPDATE findings SET lifecycle = 'open' WHERE run_id = $1 AND category = 'verified_issue'`, [runId]);

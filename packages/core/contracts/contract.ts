@@ -170,6 +170,7 @@ export const DEMO_TARGET_RULES: Rule[] = [
   { id: 'R3', text: 'Bookings cannot be made for a date in the past.', source: 'demo_target' },
   { id: 'R4', text: 'A signed-in user can only see their own bookings.', source: 'demo_target' },
   { id: 'R5', text: 'The booking form must be usable on a phone: the submit button must be reachable and not covered.', source: 'demo_target' },
+  { id: 'R6', text: 'Saving a booking from an out-of-date page must not silently undo a change saved from another tab: the save is refused with a message, or both changes are kept.', source: 'demo_target' },
 ];
 
 export function demoTargetContract(origin: string, now = new Date()): RunContract {

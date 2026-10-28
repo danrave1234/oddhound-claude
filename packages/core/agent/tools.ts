@@ -112,6 +112,13 @@ export const ToolArgs = {
     path: z.string().startsWith('/').max(300),
     try_controls: z.array(z.string().min(1).max(80)).max(2).optional(),
   }),
+  // Family 2, two tabs: an edit form of a record this actor created; two different fields, two new values.
+  check_two_tabs: z.object({
+    path: z.string().startsWith('/').max(300),
+    first: z.object({ field: z.string().min(1).max(80), value: z.string().min(1).max(200) }),
+    second: z.object({ field: z.string().min(1).max(80), value: z.string().min(1).max(200) }),
+    rule_id: z.string().max(32).optional(),
+  }),
   finish_run: z.object({ summary: z.string().min(5).max(800) }),
 } as const;
 export type ToolName = keyof typeof ToolArgs;
@@ -286,6 +293,18 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         path: { type: 'string' },
         try_controls: { type: 'array', maxItems: 2, items: { type: 'string' }, description: 'Visible button or link labels on that page to press as actor B (they change only this run\'s own test record).' },
       }, ['path']),
+    },
+  },
+  {
+    type: 'function', function: {
+      name: 'check_two_tabs',
+      description: 'Check for lost updates: Oddhound opens the edit form at path (a record you created in this run) in two tabs, saves first.value into first.field in tab 1, then saves second.value into second.field from the out-of-date tab 2, and reopens the record. A save that silently undoes the other tab\'s change is a finding. Give rule_id only when an owner rule covers this.',
+      parameters: s({
+        path: { type: 'string', description: 'Edit form of a record created in this run, e.g. "/bookings/3/edit".' },
+        first: s({ field: { type: 'string' }, value: { type: 'string' } }, ['field', 'value']),
+        second: s({ field: { type: 'string' }, value: { type: 'string' } }, ['field', 'value']),
+        rule_id: { type: 'string' },
+      }, ['path', 'first', 'second']),
     },
   },
   { type: 'function', function: { name: 'finish_run', description: 'End the exploration with a short factual summary. Refused while high-risk charters are untested and budget remains.', parameters: s({ summary: { type: 'string' } }, ['summary']) } },

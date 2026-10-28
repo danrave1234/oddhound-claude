@@ -1,8 +1,8 @@
 // Behavioral test families: the deciding code (no browser, no database). Exploration, replay and retest
 // all call these functions, so each verdict below is the one a real run would reach.
 import { describe, it, expect } from 'vitest';
-import { CLAIM_WINDOW_MS, claimVisible, distinctiveValues, judgeCrossActor, judgePersistence, swapId, valueShown, type PageView } from '../../packages/core/verifier/behavior.ts';
-import { claimDelays, ScenarioSchema, scenarioHash } from '../../packages/core/verifier/scenario.ts';
+import { CLAIM_WINDOW_MS, claimVisible, distinctiveValues, judgeCrossActor, judgePersistence, judgeTwoTabs, swapId, valueShown, type PageView } from '../../packages/core/verifier/behavior.ts';
+import { claimDelays, controlFor, ScenarioSchema, scenarioHash } from '../../packages/core/verifier/scenario.ts';
 import { ToolArgs, toolDefinitionsFor } from '../../packages/core/agent/tools.ts';
 import { BASELINE_RULES } from '../../packages/core/contracts/contract.ts';
 import { fixBriefMarkdown } from '../../packages/core/reports/fix-brief.ts';
@@ -82,6 +82,30 @@ describe('family 2: cross-actor access', () => {
   it('check_cross_actor takes a path and at most two controls', () => {
     expect(ToolArgs.check_cross_actor.safeParse({ path: '/bookings/1', try_controls: ['Cancel booking'] }).success).toBe(true);
     expect(ToolArgs.check_cross_actor.safeParse({ path: '/bookings/1', try_controls: ['a', 'b', 'c'] }).success).toBe(false);
+  });
+});
+
+describe('family 2: same actor, two tabs', () => {
+  const base = { original: { first: 'Ann', second: '2' }, wanted: { first: 'Bea', second: '5' }, firstRejected: false, staleRejected: false };
+  it('a stale save that puts back the old value with no message is a lost update', () => {
+    const r = judgeTwoTabs({ ...base, final: { first: 'Ann', second: '5' } });
+    expect(r.outcome).toBe('failed');
+    expect(r.detail).toMatch(/put back "Ann" with no message/);
+  });
+  it('refusing the stale save, or keeping both changes, passes', () => {
+    expect(judgeTwoTabs({ ...base, staleRejected: true, final: { first: 'Bea', second: '2' } }).outcome).toBe('passed');
+    expect(judgeTwoTabs({ ...base, final: { first: 'Bea', second: '5' } }).outcome).toBe('passed');
+  });
+  it('cannot judge when nothing could be lost or the end state is unexplained', () => {
+    expect(judgeTwoTabs({ ...base, wanted: { first: 'Ann', second: '5' }, final: { first: 'Ann', second: '5' } }).outcome).toBe('inconclusive');
+    expect(judgeTwoTabs({ ...base, firstRejected: true, final: { first: 'Ann', second: '5' } }).outcome).toBe('inconclusive');
+    expect(judgeTwoTabs({ ...base, final: { first: 'Zed', second: '9' } }).outcome).toBe('inconclusive');
+  });
+  it('the control is the same two edits in one tab, and the tool takes two fields', () => {
+    const s = ScenarioSchema.parse({ kind: 'two_tab', device: 'desktop', setup: { path: '/b/new', fields: { Name: 'x' }, submit: 'Save' }, path: '/b/{id}/edit', first: { field: 'Name', value: 'Bea' }, second: { field: 'Size', value: '5' }, sequential: false, expectation: 'no_lost_update' });
+    expect(controlFor(s)).toMatchObject({ kind: 'two_tab', sequential: true });
+    expect(controlFor({ ...s, sequential: true } as typeof s)).toBeNull();
+    expect(ToolArgs.check_two_tabs.safeParse({ path: '/b/1/edit', first: { field: 'Name', value: 'Bea' }, second: { field: 'Size', value: '5' } }).success).toBe(true);
   });
 });
 

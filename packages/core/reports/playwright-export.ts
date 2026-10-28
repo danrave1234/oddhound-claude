@@ -138,6 +138,25 @@ ${s.controls.map((c) => `  { const before = await page.locator('body').innerText
 `;
 }
 
+type TwoTab = Extract<Scenario, { kind: 'two_tab' }>;
+
+/** Family 2 (two tabs): an out-of-date tab's save must not silently undo the other tab's change. */
+function twoTabBody(s: TwoTab, signedIn: boolean): string {
+  const save = (tab: string, f: TwoTab['first']) => `  await (await field(${tab}, ${j(f.field)})).fill(fill(${j(f.value)}, vars));
+  await (await field(${tab}, ${j(f.field)})).locator('xpath=ancestor::form[1]').locator('button[type=submit], input[type=submit], button:not([type])').first().click();
+  await ${tab}.waitForLoadState('domcontentloaded');
+`;
+  return `  const vars: Record<string, string> = ${signedIn ? '{ ...who, marker }' : '{ ...identity(), marker }'};
+${setupLines(s).join('\n')}
+  const recordUrl = new URL(fill(${j(s.path)}, vars), BASE_URL).toString();
+  await page.goto(recordUrl);
+${s.sequential ? '' : '  const tab2 = await page.context().newPage();\n  await tab2.goto(recordUrl);\n'}${save('page', s.first)}${s.sequential ? '  await page.goto(recordUrl);\n' : ''}${save(s.sequential ? 'page' : 'tab2', s.second)}  const refused = await ${s.sequential ? 'page' : 'tab2'}.locator('[role=alert], .error').count() > 0;
+  await page.goto(recordUrl);
+  // Rule: the first change is kept, or the out-of-date save was refused with a message.
+  if (!refused) await expect(await field(page, ${j(s.first.field)})).toHaveValue(fill(${j(s.first.value)}, vars));
+`;
+}
+
 export function playwrightTest(s: Scenario, meta: { title: string; scenarioId: string; assertionHash: string }): string {
   const header = `// Oddhound regression test (exported). Scenario ${meta.scenarioId}, assertion ${meta.assertionHash.slice(0, 12)}.
 // Run: BASE_URL=https://your-staging-site npx playwright test oddhound-${meta.scenarioId.slice(0, 8)}.spec.ts
@@ -199,6 +218,8 @@ async function submitForm(page: Page, path: string, fields: Record<string, strin
     body = `${auth}${claimBody(s, Boolean(auth))}`;
   } else if (s.kind === 'cross_actor') {
     body = `${auth}${crossActorBody(s)}`;
+  } else if (s.kind === 'two_tab') {
+    body = `${auth}${twoTabBody(s, Boolean(auth))}`;
   } else {
     body = `${auth}  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(new URL(${j(s.path)}, BASE_URL).toString());
