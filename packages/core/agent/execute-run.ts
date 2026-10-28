@@ -884,8 +884,10 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
     w.failed = true;
     const mine = [...(recorded.creators?.entries() ?? [])].filter(([, c]) => c.actor === w.actor).map(([id]) => id);
     const inPath = recordIdsInUrl(new URL(w.path, session.origin).toString()).find((id) => mine.includes(id));
-    // Recreate the run's own records the page summarises; a record named in the path is created last, as {id}.
-    const ids = [...mine.filter((id) => id !== inPath).slice(-3), ...(inPath ? [inPath] : [])];
+    // Recreate the run's own records the page summarises, from the first one and in creation order, so the
+    // page looks as it did (keeping only the last few once hid a skipped first row behind a party of 0).
+    // A record named in the path is created last, as {id}.
+    const ids = [...mine.filter((id) => id !== inPath).slice(0, inPath ? 3 : 4), ...(inPath ? [inPath] : [])];
     const scenario: Scenario = {
       kind: 'invariant', device: w.device, ...(recorded.auth ? { auth: recorded.auth } : {}), setups: ids.map((id) => recorded.createdBy!.get(id)!),
       path: inPath ? swapId(w.path, inPath, '{id}') : w.path, invariant: w.inv,
