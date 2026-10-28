@@ -6,6 +6,7 @@ import { CLAIM_WINDOW_MS, NUMBER_ASSUMPTIONS, claimVisible, controlKey, distinct
 import { claimDelays, controlFor, ScenarioSchema, scenarioHash } from '../../packages/core/verifier/scenario.ts';
 import { ToolArgs, toolDefinitionsFor } from '../../packages/core/agent/tools.ts';
 import { BASELINE_RULES } from '../../packages/core/contracts/contract.ts';
+import { familyCandidateKey } from '../../packages/core/agent/execute-run.ts';
 import { fixBriefMarkdown } from '../../packages/core/reports/fix-brief.ts';
 import { playwrightTest } from '../../packages/core/reports/playwright-export.ts';
 
@@ -184,6 +185,21 @@ describe('family 5: differential comparison', () => {
     const phone = { context: 'a phone', errors: ['Something went wrong'], controls: desk.controls };
     expect(judgeDifferential(desk, phone).errorsOnlyIn).toEqual(['Something went wrong']);
     expect(judgeDifferential({ ...desk, controls: [] }, phone).outcome).toBe('inconclusive');
+  });
+});
+
+describe('repeated family problems are merged', () => {
+  const tab = (path: string, field: string) => ScenarioSchema.parse({ kind: 'two_tab', device: 'desktop', setup: { path: '/b/new', fields: { Name: 'x' }, submit: 'Save' }, path, first: { field, value: 'v' }, second: { field: 'Size', value: '5' }, sequential: false, expectation: 'no_lost_update' });
+  it('same family, rule, check and page (record numbers folded) is one problem', () => {
+    const a = familyCandidateKey({ family: 'two_actors', ruleId: 'R6', scenario: tab('/b/{id}/edit', 'Name') });
+    expect(familyCandidateKey({ family: 'two_actors', ruleId: 'R6', scenario: tab('/b/{id}/edit', 'Size') })).toBe(a);
+    expect(familyCandidateKey({ family: 'two_actors', ruleId: 'R6', scenario: tab('/b/12/edit?x=1', 'Name') })).toBe(a);
+  });
+  it('another rule, another page or another family stays separate', () => {
+    const a = familyCandidateKey({ family: 'two_actors', ruleId: 'R6', scenario: tab('/b/{id}/edit', 'Name') });
+    expect(familyCandidateKey({ family: 'two_actors', ruleId: 'lost_update', scenario: tab('/b/{id}/edit', 'Name') })).not.toBe(a);
+    expect(familyCandidateKey({ family: 'two_actors', ruleId: 'R6', scenario: tab('/c/{id}/edit', 'Name') })).not.toBe(a);
+    expect(familyCandidateKey({ family: 'invariant', ruleId: 'R6', scenario: tab('/b/{id}/edit', 'Name') })).not.toBe(a);
   });
 });
 

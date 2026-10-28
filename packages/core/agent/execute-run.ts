@@ -66,7 +66,19 @@ type Candidate = {
   contexts?: string;
   /** Family-specific limits of what the check shows. */
   limitations?: string;
+  /** How many times exploration hit this same family problem (repeats are merged into one candidate). */
+  repeats?: number;
 };
+
+/**
+ * Two family candidates are the same problem when family, rule (or hypothesis id), check kind and page
+ * (record numbers folded) match, e.g. two lost-update checks on /bookings/:id/edit.
+ */
+export function familyCandidateKey(c: { family?: string; ruleId: string; scenario: Scenario }): string {
+  const s = c.scenario;
+  const page = s.kind === 'interruption' ? s.form.path : 'path' in s ? s.path : 'start' in s ? s.start : '';
+  return `${c.family}|${c.ruleId}|${s.kind}|${page.split('?')[0]!.replace(/\{\w+\}|\d+/g, ':id')}`;
+}
 
 /** The last form submit of the run, as Oddhound observed it (family 1 reads it). */
 type LastWrite = {
@@ -586,6 +598,22 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
 
   // ---- Behavioral families (MVP §9). The model names what to check; Oddhound acts, looks and decides.
 
+  /** File a family candidate, or merge it into an earlier one for the same family, rule, check and page.
+   *  Returns the earlier candidate when merged (the repeat is counted on it, not filed again). */
+  const addFamilyCandidate = async (c: Candidate): Promise<Candidate | null> => {
+    const key = familyCandidateKey(c);
+    const prior = candidates.find((x) => x.family && familyCandidateKey(x) === key);
+    if (prior) {
+      prior.repeats = (prior.repeats ?? 1) + 1;
+      await ev('finding.candidate_merged', { title: c.title, into: prior.title, ruleId: prior.ruleId, kind: c.scenario.kind, family: c.family, repeats: prior.repeats });
+      return prior;
+    }
+    candidates.push(c);
+    await ev('finding.candidate', { title: c.title, ruleId: c.hypothesis ? null : c.ruleId, kind: c.scenario.kind, source: 'agent', family: c.family });
+    return null;
+  };
+  const mergedText = (prior: Candidate) => `This is the same problem as an earlier candidate ("${prior.title}"), so it was counted there (seen ${prior.repeats} times) and not filed again. Move on to another charter.`;
+
   /** Why the run may not open a path on the verified site, or null when it may. */
   const pathRefusal = (p: string): string | null => {
     let u: URL;
@@ -662,13 +690,13 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
     };
     const names = verdict.missing.map((m) => `"${m.field}"`).join(', ');
     const title = args.claim ? `The page says "${args.claim.slice(0, 40)}", but ${names} ${verdict.missing.length === 1 ? 'is' : 'are'} not saved` : `${names} not saved after submitting ${w.path}`;
-    candidates.push({
+    const prior = await addFamilyCandidate({
       title: title.slice(0, 140), ruleId: args.claim ? 'B11' : 'claim_unstated', impact: 'high', observed: observedText.slice(0, 500), scenario, actor: t.actor, device: t.device, source: 'agent', family: 'claim_vs_truth',
       ...(args.claim ? {} : { hypothesis: 'The form was accepted without an error, so its values were expected to be saved. The page showed no success message, so no explicit rule says this save should have kept them.' }),
       contexts: `actor ${t.actor}, ${t.device}; exploration reloaded and reopened in the same session, replays use fresh sessions`,
       limitations: `Saved values were looked for on the page the save landed on${revisit.length ? ' and on the reopened record' : ''} within a ${CLAIM_WINDOW_MS / 1000} s window (exploration used ${(windowUsedMs / 1000).toFixed(1)} s over ${looks} looks). A value the site shows in another format (e.g. a reformatted date) would also look missing.`,
     });
-    await ev('finding.candidate', { title, ruleId: args.claim ? 'B11' : null, kind: 'claim_check', source: 'agent', family: 'claim_vs_truth' });
+    if (prior) return `${mergedText(prior)}${afterCheck()}`;
     return `Claim did NOT hold: ${observedText} Recorded as a candidate${args.claim ? '' : ' for review only (no success message, so no rule to verify against)'}; Oddhound will replay it in fresh sessions.${afterCheck()}`;
   };
 
@@ -766,13 +794,13 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
     };
     const route = args.path.split('?')[0]!.replace(/\/\d+(?=\/|$)/g, '/:id');
     const title = `Another account can ${[v.leaked.length ? 'see' : '', v.changedBy.length ? 'change' : ''].filter(Boolean).join(' and ')} a user's record at ${route}`;
-    candidates.push({
+    const prior = await addFamilyCandidate({
       title, ruleId: 'B7', impact: 'high', observed: `${v.detail}.`.slice(0, 500), scenario, actor: 'A+B', device: session.device, source: 'agent', family: 'two_actors',
       ...(v.privacyEstablished ? {} : { hypothesis: listPath ? `Actor B's own ${listPath} also showed this record, so the site may show it to everyone on purpose.` : 'The create did not land on a list of actor A\'s records, so Oddhound could not show that the site treats this record as private.' }),
       contexts: `actor A (creator) and actor B (a separate fresh account), ${session.device}`,
       limitations: 'Only a record created in this run was opened, by its exact URL through the UI as a normal user; no ids were guessed and no direct API request was made (that is the separate authorized request mode).',
     });
-    await ev('finding.candidate', { title, ruleId: 'B7', kind: 'cross_actor', source: 'agent', family: 'two_actors' });
+    if (prior) return `${mergedText(prior)}${afterCheck()}`;
     return `Cross-actor check FAILED: ${v.detail}.${offered} Recorded as a candidate${v.privacyEstablished ? '' : ' for review (privacy not established)'}; Oddhound will replay it with two fresh accounts. You are actor A again.${afterCheck()}`;
   };
 
@@ -823,13 +851,13 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
     const title = v.created > 1
       ? `${args.kind === 'double_submit' ? `Pressing "${form.submit}" twice` : `Interrupting "${form.submit}" (${args.kind.replace(/_/g, ' ')})`} creates ${v.created} records`
       : `The page reports success offline, but nothing is saved (${formUrl.pathname})`;
-    candidates.push({
+    const prior = await addFamilyCandidate({
       title: title.slice(0, 140), ruleId: explicit?.id ?? 'interruption', impact: 'medium', observed: `${v.detail}.`.slice(0, 500), scenario, actor: session.actor, device: session.device, source: 'agent', family: 'interruption',
       ...(explicit ? {} : { hypothesis: 'One user\'s interrupted submit was expected to create at most one record and never to report a save that did not happen; no explicit or owner-approved rule says so.' }),
       contexts: `actor ${session.actor}, ${session.device}; control: the same form submitted once, normally`,
       limitations: `Records were counted by how often the submitted "${label}" text appears on ${args.list_path}.${args.kind === 'offline_submit' ? ' Offline was simulated in the browser (context.setOffline): a client condition, not proof of server behaviour under a real network failure.' : ''}`,
     });
-    await ev('finding.candidate', { title, ruleId: explicit?.id ?? null, kind: 'interruption', source: 'agent', family: 'interruption' });
+    if (prior) return `${mergedText(prior)}${afterCheck()}`;
     return `Interruption check FAILED: ${v.detail}. Recorded as a candidate${explicit ? ` against ${explicit.id}` : ' for review (no explicit rule)'}; Oddhound will replay it next to a normal single submit.${afterCheck()}`;
   };
 
@@ -867,20 +895,20 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
     };
     const route = routePattern(new URL(args.path, session.origin).toString());
     const title = `${absent.map((m) => `"${m.label}"`).join(', ')} ${absent.length === 1 ? 'is' : 'are'} missing on a phone at ${route}`;
-    candidates.push({
+    const prior = await addFamilyCandidate({
       title: title.slice(0, 140), ruleId: explicit?.id ?? 'differential', impact: 'medium', observed: `${v.detail}.`.slice(0, 500), scenario, actor: session.actor, device: 'desktop+mobile', source: 'agent', family: 'differential',
       ...(explicit ? {} : { hypothesis: 'The phone layout was expected to offer the same actions as desktop. A phone layout may move an action into a menu on purpose; no explicit or owner-approved rule says they must match.' }),
       contexts: `actor ${session.actor} on desktop (1440x900) and on a phone (390x844), same account`,
       limitations: 'Only controls in the page\'s main content were compared (menus and headers legitimately collapse on phones); digits in labels were ignored. A control moved into a menu on the phone counts as missing.',
     });
-    await ev('finding.candidate', { title, ruleId: explicit?.id ?? null, kind: 'differential', source: 'agent', family: 'differential' });
+    if (prior) return `${mergedText(prior)}${afterCheck()}`;
     return `Differential check FAILED: ${v.detail}.${others.length ? ` Also: ${others.join('; ')}.` : ''} Recorded as a candidate${explicit ? ` against ${explicit.id}` : ' for review (no explicit rule says the layouts must match)'}.${afterCheck()}`;
   };
 
   /** Family 3: invariants the model proposed, re-checked by code after every later step on their page. */
   type Watched = { route: string; path: string; actor: string; device: 'desktop' | 'mobile'; inv: Invariant; evidence: string; explicit?: { id: string }; failed: boolean };
   const judgeHere = async (w: Watched): Promise<InvariantVerdict> => judgeInvariant(w.inv, { text: (await view()).text, tables: await readTables(await session.page()) });
-  const invariantCandidate = async (w: Watched, v: InvariantVerdict, when: string) => {
+  const invariantCandidate = async (w: Watched, v: InvariantVerdict, when: string): Promise<Candidate | null> => {
     w.failed = true;
     const mine = [...(recorded.creators?.entries() ?? [])].filter(([, c]) => c.actor === w.actor).map(([id]) => id);
     const inPath = recordIdsInUrl(new URL(w.path, session.origin).toString()).find((id) => mine.includes(id));
@@ -893,13 +921,13 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
       path: inPath ? swapId(w.path, inPath, '{id}') : w.path, invariant: w.inv,
     };
     const title = w.inv.kind === 'sum' ? `"${w.inv.total}" does not equal the sum of the "${w.inv.column}" values on ${w.route}` : `"${w.inv.total}" does not match the number of rows on ${w.route}`;
-    candidates.push({
+    const prior = await addFamilyCandidate({
       title: title.slice(0, 140), ruleId: w.explicit?.id ?? 'invariant', impact: 'medium', observed: `${when}: ${v.detail}.`.slice(0, 500), scenario, actor: w.actor, device: w.device, source: 'agent', family: 'invariant',
       ...(w.explicit ? {} : { hypothesis: `An invariant the model proposed from the page, not stated by the page or the owner: ${w.evidence}` }),
       contexts: `actor ${w.actor}, ${w.device}; numbers parsed by Oddhound from the page`,
       limitations: `${NUMBER_ASSUMPTIONS} Only what the page displays was compared; a charge, discount or row the page does not show would change the expected value. The replay recreates up to ${ids.length} of this run's own records first.`,
     });
-    await ev('finding.candidate', { title, ruleId: w.explicit?.id ?? null, kind: 'invariant', source: 'agent', family: 'invariant' });
+    return prior;
   };
   /** After each action: re-check the invariants registered for the page it ended on. Returns notes for the model. */
   const recheckInvariants = async (o: Observation): Promise<string[]> => {
@@ -909,8 +937,8 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
       const v = await judgeHere(w);
       if (v.outcome !== 'failed') continue;
       await ev('scenario.finished', { family: 'invariant', outcome: 'failed', route: w.route, invariant: w.inv, values: v.values, after: 'a later step' });
-      await invariantCandidate(w, v, 'After a later step');
-      notes.push(`ODDHOUND INVARIANT BROKEN on ${w.route}: ${v.detail}. Recorded for replay${w.explicit ? '' : ' (for review: no explicit rule)'}.`);
+      const prior = await invariantCandidate(w, v, 'After a later step');
+      notes.push(prior ? `ODDHOUND INVARIANT BROKEN on ${w.route}: ${v.detail}. ${mergedText(prior)}` : `ODDHOUND INVARIANT BROKEN on ${w.route}: ${v.detail}. Recorded for replay${w.explicit ? '' : ' (for review: no explicit rule)'}.`);
     }
     return notes;
   };
@@ -927,7 +955,8 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
     if (v.outcome === 'inconclusive') return `Cannot check that invariant here: ${v.detail}. Not registered.`;
     watched.set(`${w.route}|${JSON.stringify(inv)}|${w.actor}|${w.device}`, w);
     if (v.outcome === 'passed') return `Invariant holds: ${v.detail}. Oddhound re-checks it after every later step on ${w.route}.${afterCheck()}`;
-    await invariantCandidate(w, v, 'When first checked');
+    const prior = await invariantCandidate(w, v, 'When first checked');
+    if (prior) return `Invariant BROKEN: ${v.detail}. ${mergedText(prior)}${afterCheck()}`;
     return `Invariant BROKEN: ${v.detail}. Recorded as a candidate${explicit ? ` against ${explicit.id}` : ' for review (no explicit rule; cite an owner rule in rule_id when one states it)'}.${afterCheck()}`;
   };
 
@@ -976,13 +1005,13 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
         first: { field: first.field, value: asTemplateValue(first.value) }, second: { field: second.field, value: asTemplateValue(second.value) }, sequential: false, expectation: 'no_lost_update',
       };
       const title = `Saving from an out-of-date tab silently undoes "${first.field}" saved in another tab`;
-      candidates.push({
+      const prior = await addFamilyCandidate({
         title: title.slice(0, 140), ruleId: explicit?.id ?? 'lost_update', impact: 'medium', observed: `Two tabs on ${args.path}: ${v.detail}.`.slice(0, 500), scenario, actor: session.actor, device: session.device, source: 'agent', family: 'two_actors',
         ...(explicit ? {} : { hypothesis: 'A save from an out-of-date page should be refused or merged rather than silently undo a change saved from another tab. Last-write-wins may be intended; no explicit or owner-approved rule says otherwise.' }),
         contexts: `actor ${session.actor}, two tabs of one ${session.device} session; control: the same two edits one after the other in one tab`,
         limitations: 'Two tabs of one browser session on a record created in this run. Two separate devices or accounts editing at the same moment were not tested.',
       });
-      await ev('finding.candidate', { title, ruleId: explicit?.id ?? null, kind: 'two_tab', source: 'agent', family: 'two_actors' });
+      if (prior) return `${mergedText(prior)}${afterCheck()}`;
       return `Two-tab check FAILED: ${v.detail}. Recorded as a candidate${explicit ? ` against ${explicit.id}` : ' for review (no explicit rule; give rule_id when an owner rule covers it)'}; Oddhound will replay it with a one-tab control.${afterCheck()}`;
     } finally {
       await tab2.close().catch(() => {});
@@ -1725,7 +1754,7 @@ async function verifyCandidates(v: { db: Db; runId: string; generation: number; 
     const ruleSource = rule.source === 'hypothesis' ? 'Agent hypothesis (no explicit or owner-approved rule)'
       : `${rule.source === 'owner' ? 'Owner rule' : rule.source === 'baseline' ? 'Oddhound baseline rule' : 'Demo target rule'} ${rule.id}${c.stated ? ` (page-stated: ${c.stated})` : ''}`;
     // Family findings say which contexts were used and what the check cannot show.
-    const fullLimitations = [limitations, c.contexts ? `Contexts: ${c.contexts}.` : '', c.limitations ?? ''].filter(Boolean).join(' ').slice(0, 1500);
+    const fullLimitations = [limitations, c.contexts ? `Contexts: ${c.contexts}.` : '', c.limitations ?? '', c.repeats && c.repeats > 1 ? `Exploration hit this same problem ${c.repeats} times; it is filed once.` : ''].filter(Boolean).join(' ').slice(0, 1500);
     const f = await db.query<{ id: string }>(`INSERT INTO findings (project_id, run_id, scenario_id, control_scenario_id, title, category, verification, lifecycle, impact, confidence, rule_id, rule_source, expected, observed, device, actor, limitations, fingerprint, evidence_ids, family)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id`,
       [run.project_id, runId, scenarioId, controlScenarioId, c.title, category, verification, verification === 'verified' ? 'open' : null, c.impact,

@@ -96,6 +96,8 @@ class ScriptedPlanner implements ChatProvider {
       call('check_cross_actor', { path: '/bookings/2' }),
       // Family 2, two tabs: once against demo rule R6, once with no rule (it can only be needs_review).
       call('check_two_tabs', { path: '/bookings/1/edit', first: { field: 'Guest name', value: 'Two Tab Guest A1' }, second: { field: 'Party size', value: '5' }, rule_id: 'R6' }),
+      // The same R6 problem on the same page again, with other fields: merged, not filed twice.
+      call('check_two_tabs', { path: '/bookings/1/edit', first: { field: 'Party size', value: '7' }, second: { field: 'Guest name', value: 'Third Tab Guest C3' }, rule_id: 'R6' }),
       call('check_two_tabs', { path: '/bookings/1/edit', first: { field: 'Guest name', value: 'Second Tab Guest B2' }, second: { field: 'Party size', value: '6' } }),
       // Family 5: the booking page on desktop vs. a phone (defect, demo rule R8), and its Cancel button (control).
       call('check_differential', { path: '/bookings/1', rule_id: 'R8' }),
@@ -156,7 +158,7 @@ describe('behavioral families 1-5 on the Harbor demo target', () => {
 
     const events = (await db.query<{ type: string; payload: any }>('SELECT type, payload FROM run_events WHERE run_id = $1 ORDER BY seq', [runId])).rows;
     const finished = events.filter((e) => e.type === 'scenario.finished').map((e) => `${e.payload.family}:${e.payload.outcome}`);
-    expect(finished).toEqual(['invariant:failed', 'invariant:passed', 'claim_vs_truth:passed', 'claim_vs_truth:failed', 'two_actors:failed', 'two_actors:passed', 'two_actors:failed', 'two_actors:failed', 'differential:failed', 'differential:passed', 'interruption:failed', 'interruption:passed']);
+    expect(finished).toEqual(['invariant:failed', 'invariant:passed', 'claim_vs_truth:passed', 'claim_vs_truth:failed', 'two_actors:failed', 'two_actors:passed', 'two_actors:failed', 'two_actors:failed', 'two_actors:failed', 'differential:failed', 'differential:passed', 'interruption:failed', 'interruption:passed']);
     // (The conversation may be compacted into Oddhound's notebook around here, so read the recorded event.)
     expect(events.find((e) => e.type === 'scenario.finished' && e.payload.kind === 'double_submit')!.payload).toMatchObject({ outcome: 'failed', before: 0, afterInterruption: 2, created: 2 });
     expect(reply(/^Interruption check passed/)).toMatch(/submitting while offline, then coming back online and one normal retry created exactly one record/);
@@ -180,6 +182,10 @@ describe('behavioral families 1-5 on the Harbor demo target', () => {
     expect(findings.map((f) => `${f.rule_id ?? 'null'}:${f.family}:${f.verification}:${f.category}`)).toEqual([
       'B11:claim_vs_truth:verified:verified_issue', 'B7:two_actors:verified:verified_issue', 'R6:two_actors:verified:verified_issue', 'R7:invariant:verified:verified_issue', 'R8:differential:verified:verified_issue', 'R9:interruption:verified:verified_issue', 'null:two_actors:inconclusive:needs_review',
     ]);
+    // The repeated R6 check was merged into the first one and counted on it.
+    expect(events.filter((e) => e.type === 'finding.candidate_merged').map((e) => [e.payload.ruleId, e.payload.repeats])).toEqual([['R6', 2]]);
+    expect(reply(/same problem as an earlier candidate/)).toMatch(/seen 2 times\) and not filed again/);
+    expect((await db.query<{ limitations: string }>(`SELECT limitations FROM findings WHERE run_id = $1 AND rule_id = 'R6'`, [runId])).rows[0]!.limitations).toMatch(/hit this same problem 2 times; it is filed once/);
     // The rule-less two-tab check reproduced, but no explicit rule backs it: review only, never verified.
     expect(findings.find((f) => f.rule_id === null)!.limitations).toMatch(/Reproduced 2\/2, but no explicit or owner-approved rule/);
     // The one-tab control ran next to the verified two-tab finding and passed.
