@@ -93,15 +93,27 @@ function HoundHead({ ear = EAR, face = CREAM, ink = INK, arcs = BLAZE, collar = 
   );
 }
 
-/** Original Oddhound app mark: a hound following a scent, on a forest-green squircle. */
-export function HoundMark({ size = 24, title = 'Oddhound' }: { size?: number; title?: string }) {
+/** Oddhound app mark (AI-generated with Recraft V4.1, see public/brand/PROVENANCE.md). Decorative by default. */
+export function HoundMark({ size = 24, title }: { size?: number; title?: string }) {
+  const px = size <= 32 ? 64 : size <= 64 ? 128 : 256;
   return (
-    <svg className="hound-mark" width={size} height={size} viewBox="0 0 32 32" role="img" aria-label={title} style={{ flex: 'none' }}>
-      <rect width="32" height="32" rx="8.5" fill={FOREST} />
-      <path d="M8.5 0h15A8.5 8.5 0 0 1 32 8.5V14H0V8.5A8.5 8.5 0 0 1 8.5 0z" fill="#fff" opacity=".1" />
-      <g transform="translate(-1.6 0)"><HoundHead /></g>
-      <rect x=".5" y=".5" width="31" height="31" rx="8" fill="none" stroke="#000" strokeOpacity=".12" />
-    </svg>
+    // eslint-disable-next-line @next/next/no-img-element
+    <img className="hound-mark" src={`/brand/oddhound-icon-${px}.png`} srcSet={`/brand/oddhound-icon-${px}.png 1x, /brand/oddhound-icon-${Math.min(px * 2, 512)}.png 2x`}
+      width={size} height={size} alt={title ?? ''} style={{ flex: 'none', display: 'block' }} />
+  );
+}
+
+const ART = {
+  tracking: { src: '/brand/hound-tracking.png', w: 1600, h: 769 },
+  found: { src: '/brand/hound-found.png', w: 720, h: 753 },
+} as const;
+
+/** Mascot illustrations: the hound tracking a scent across web pages, and the hound pointing at a flagged problem. */
+export function HoundArt({ name, width, className }: { name: keyof typeof ART; width: number; className?: string }) {
+  const a = ART[name];
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img className={className} src={a.src} width={width} height={Math.round((width * a.h) / a.w)} alt="" loading="lazy" decoding="async" style={{ display: 'block', maxWidth: '100%', height: 'auto' }} />
   );
 }
 

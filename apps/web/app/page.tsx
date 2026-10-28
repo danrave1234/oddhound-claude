@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { HoundFigure, HoundMark, Icon, type IconName } from '@/ui/icons';
+import { HoundArt, HoundMark, Icon, type IconName } from '@/ui/icons';
 import { publicStatus } from '@/lib/status-data';
 import { currentUser } from '@/lib/server';
 import { TryDemoButton } from './try-demo-button';
@@ -88,9 +88,12 @@ export default async function Landing() {
         </section>
 
         <section className="wrap proof" aria-labelledby="proof-title">
-          <div className="proof-intro">
-            <h2 id="proof-title" className="sec-title">Evidence first. Nothing invented.</h2>
-            <p className="lead">Every finding points to a rule you wrote and to proof from an independent replay. What wasn&apos;t tested is said plainly.</p>
+          <div className="proof-head">
+            <div className="proof-intro">
+              <h2 id="proof-title" className="sec-title">Evidence first. Nothing invented.</h2>
+              <p className="lead">Every finding points to a rule you wrote and to proof from an independent replay. What wasn&apos;t tested is said plainly.</p>
+            </div>
+            <div className="proof-art" aria-hidden><HoundArt name="found" width={210} /></div>
           </div>
           <div className="proof-grid">
             <article className="proof-feature" aria-label="Illustration of ownership proof and independent replays">
@@ -123,7 +126,7 @@ export default async function Landing() {
                 {status.replayRunId && <Link className="btn btn-lg cta-ghost" href={`/runs/${status.replayRunId}?replay=1`}><Icon name="eye" /> Watch a demo replay</Link>}
               </div>
             </div>
-            <div className="cta-art" aria-hidden><HoundFigure size={170} /></div>
+            <div className="cta-art" aria-hidden><HoundArt name="tracking" width={460} /></div>
           </div>
         </section>
       </main>

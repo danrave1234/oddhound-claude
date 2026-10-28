@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { RunsLeft, Shell } from '@/ui/shell';
-import { HoundFigure, Icon } from '@/ui/icons';
+import { HoundArt, Icon } from '@/ui/icons';
 import { currentUser, db, mayScanVerifiedSites } from '@/lib/server';
 import { publicStatus } from '@/lib/status-data';
 import { QuickDemoTile } from './quick-demo';
@@ -51,7 +51,7 @@ export default async function Projects() {
 
       {projects.length === 0 ? (
         <div className="card empty">
-          <div className="empty-art"><HoundFigure size={58} /></div>
+          <div className="empty-illo" aria-hidden><HoundArt name="tracking" width={340} /></div>
           <h2 className="h2">No sites yet</h2>
           <p>Add a site you own, prove it with a file, DNS record or meta tag, and start your first run.</p>
           {allowed && <div className="actions"><Link className="btn btn-primary" href="/app/projects/new"><Icon name="plus" /> Add a site</Link></div>}
