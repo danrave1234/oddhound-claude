@@ -8,7 +8,7 @@
 import http from 'node:http';
 import net from 'node:net';
 import { once } from 'node:events';
-import { resolvePublicAddress, SafeFetchError, type SafeFetchOptions } from './safe-fetch.ts';
+import { resolvePublicAddress, resolvePublicAddresses, SafeFetchError, type SafeFetchOptions } from './safe-fetch.ts';
 import { LIMITS } from '../contracts/limits.ts';
 
 export type EgressDecision = {
@@ -20,6 +20,9 @@ export type EgressDecision = {
   address?: string;
   reason?: string;
 };
+
+/** Per-address upstream connect bound before trying the next validated address. */
+const CONNECT_TIMEOUT_MS = 10_000;
 
 export type EgressProxyOptions = SafeFetchOptions & {
   listenPort?: number; // default: ephemeral
@@ -99,27 +102,43 @@ export async function startEgressProxy(opts: EgressProxyOptions = {}): Promise<E
     const host = m[1]!, port = Number(m[2]);
     const capReason = admit();
     if (capReason) { denied++; decide({ kind: 'connect', host, port, allowed: false, reason: capReason }); client.end('HTTP/1.1 429 Too Many Requests\r\n\r\n'); return; }
-    let address: string;
-    try { address = await resolvePublicAddress(host, port, opts); }
+    let addresses: string[];
+    try { addresses = await resolvePublicAddresses(host, port, opts); }
     catch (e) {
       denied++;
       decide({ kind: 'connect', host, port, allowed: false, reason: e instanceof SafeFetchError ? e.message : 'resolve_failed' });
       client.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n');
       return;
     }
-    decide({ kind: 'connect', host, port, allowed: true, address });
-    const upstream = net.connect({ host: address, port });
+    // Try each validated address (IPv4 first) with a bounded connect time, so one silently dropped
+    // address (e.g. IPv6 where the host has no route) cannot stall the browser until its page timeout.
+    let connected: net.Socket | null = null;
+    for (const candidate of addresses) {
+      const sock = net.connect({ host: candidate, port });
+      const ok = await new Promise<boolean>((res) => {
+        const timer = setTimeout(() => { sock.destroy(); res(false); }, CONNECT_TIMEOUT_MS);
+        sock.once('connect', () => { clearTimeout(timer); res(true); });
+        sock.once('error', () => { clearTimeout(timer); res(false); });
+      });
+      if (ok) { connected = sock; decide({ kind: 'connect', host, port, allowed: true, address: candidate }); break; }
+    }
+    if (!connected || client.destroyed) {
+      connected?.destroy();
+      if (!client.destroyed) client.end('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n');
+      return;
+    }
+    const upstream = connected;
     sockets.add(upstream);
     upstream.on('close', () => sockets.delete(upstream));
     upstream.on('error', () => client.destroy());
-    upstream.on('connect', () => {
+    {
       client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       if (head.length) { count(head.length); upstream.write(head); }
       client.on('data', (c: Buffer) => { count(c.length); if (!exhausted) upstream.write(c); });
       upstream.on('data', (c: Buffer) => { count(c.length); if (!exhausted) client.write(c); });
       client.on('end', () => upstream.end());
       upstream.on('end', () => client.end());
-    });
+    }
   });
 
   server.listen(opts.listenPort ?? 0, '127.0.0.1');

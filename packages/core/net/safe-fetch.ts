@@ -31,6 +31,14 @@ export type SafeFetchOptions = {
 const defaultResolver = (host: string) => lookup(host, { all: true, verbatim: true });
 
 export async function resolvePublicAddress(hostname: string, port: number, opts: SafeFetchOptions = {}): Promise<string> {
+  return (await resolvePublicAddresses(hostname, port, opts))[0]!;
+}
+
+/**
+ * Every answer validated (any non-public answer rejects the whole name), returned IPv4 first: hosted
+ * browser runtimes (Modal Sandboxes) have no IPv6 route, and resolver answer order is not stable.
+ */
+export async function resolvePublicAddresses(hostname: string, port: number, opts: SafeFetchOptions = {}): Promise<string[]> {
   const host = hostname.replace(/^\[|\]$/g, '');
   const answers = isIP(host) ? [{ address: host, family: isIP(host) }] : await (opts.resolver ?? defaultResolver)(host);
   if (answers.length === 0) throw new SafeFetchError('dns_no_answer');
@@ -38,7 +46,8 @@ export async function resolvePublicAddress(hostname: string, port: number, opts:
     const verdict = isDialAllowed(answer.address, port, opts.lab);
     if (!verdict.allowed) throw new SafeFetchError('blocked_address', `${answer.address}: ${verdict.reason}`);
   }
-  return answers[0]!.address;
+  const ordered = [...answers.filter((a) => isIP(a.address) === 4), ...answers.filter((a) => isIP(a.address) !== 4)];
+  return [...new Set(ordered.map((a) => a.address))];
 }
 
 export async function safeFetch(rawUrl: string, opts: SafeFetchOptions = {}): Promise<SafeFetchResult> {
