@@ -1,0 +1,23 @@
+{
+  "at": "2026-10-28T08:33:46.024Z",
+  "sandboxRuntime": "gvisor",
+  "outbound": "open",
+  "connect": "token",
+  "imageId": "im-6P2J5P3OXzsS65srOXr4Cs",
+  "runId": "canary-870385e4a67d",
+  "startupDiagnosis": {
+    "stdout": "uid=0(root) gid=0(root) groups=0(root)\nnft_exit=3\niptables_exit=127\nuserns_exit=0",
+    "stderr": "mnl.c:61: Unable to initialize Netlink socket: Protocol not supported\nmnl.c:61: Unable to initialize Netlink socket: Protocol not supported"
+  },
+  "leftoversReaped": [],
+  "checks": [
+    {
+      "check": "browser Sandbox starts (nftables applied, browser server ready, connected)",
+      "expected": "started",
+      "actual": "failed: browser Sandbox failed to start: {\"nftables\":\"failed\"}\n",
+      "pass": false
+    }
+  ],
+  "passed": 0,
+  "failed": 1
+}

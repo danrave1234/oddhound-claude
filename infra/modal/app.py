@@ -21,7 +21,8 @@ import modal
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 WORKSPACE = os.environ.get("ODDHOUND_MODAL_WORKSPACE", "")
 BROWSER_IMAGE_ID = os.environ.get("MODAL_BROWSER_IMAGE_ID", "")
-SANDBOX_RUNTIME = os.environ.get("MODAL_SANDBOX_RUNTIME", "")
+# gVisor cannot install the browser-user firewall (no netfilter netlink; canary Oct 28), so browsers run as VMs.
+SANDBOX_RUNTIME = os.environ.get("MODAL_SANDBOX_RUNTIME", "vm")
 
 
 def url(label: str) -> str:
@@ -63,6 +64,7 @@ COMMON_ENV = {
     "MODAL_BROWSER_IMAGE_ID": BROWSER_IMAGE_ID,
     "MODAL_SANDBOX_RUNTIME": SANDBOX_RUNTIME,
     "MODAL_CONNECT": "token",
+    "MODAL_OUTBOUND": "public",
     "WORKER_WAKE": "modal",
     "MODAL_APP": "oddhound",
     "MODAL_WORKER_FUNCTION": "worker",

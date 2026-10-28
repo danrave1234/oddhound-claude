@@ -29,14 +29,23 @@ const runId = `canary-${randomBytes(6).toString('hex')}`;
 const out: Record<string, unknown> = { at: new Date().toISOString(), sandboxRuntime, outbound, connect, imageId, runId };
 
 let startupError: string | null = null;
+const deniedHosts = new Set<string>();
 let detailed: Awaited<ReturnType<ModalSandboxRuntime['provisionDetailed']>> | null = null;
 try {
-  detailed = await rt.provisionDetailed({ runId, onEgress: (d) => console.log('egress.denied', d.host, d.port, d.reason) });
+  detailed = await rt.provisionDetailed({ runId, onEgress: (d) => { deniedHosts.add(d.host.replace(/^\[|\]$/g, '')); console.log('egress.denied', d.host, d.port, d.reason); } });
 } catch (e) {
   startupError = (e as Error).message;
 }
 
 if (!detailed) {
+  // Diagnose a startup failure in a throwaway Sandbox from the same image (no secrets, 2-minute timeout).
+  const app = await client.apps.fromName(appName, { createIfMissing: true });
+  const probe = await client.sandboxes.create(app, await client.images.fromId(imageId), { runtime: sandboxRuntime, timeoutMs: 120_000, tags: { 'oddhound-role': 'browser' } });
+  const x = await probe.exec(['/bin/sh', '-c', 'id; nft --version; echo "table inet t { chain o { type filter hook output priority 0; policy accept; meta skuid 1000 drop; } }" > /tmp/t.nft; nft -f /tmp/t.nft; echo nft_exit=$?; command -v iptables && iptables -A OUTPUT -m owner --uid-owner 1000 -j DROP; echo iptables_exit=$?; unshare -Ur true; echo userns_exit=$?']);
+  const [xo, xe] = await Promise.all([x.stdout.readText(), x.stderr.readText(), x.wait()]);
+  out.startupDiagnosis = { stdout: xo.trim(), stderr: xe.trim().slice(0, 1500) };
+  console.log(xo, xe);
+  await probe.terminate();
   record('browser Sandbox starts (nftables applied, browser server ready, connected)', 'started', `failed: ${startupError?.slice(0, 500)}`, false);
   // Make sure nothing was left behind.
   const left = await reapModalSandboxes({ appName, client }, async () => false);
@@ -79,13 +88,33 @@ if (!detailed) {
   if (!netcheck) record('in-guest netcheck ran', 'JSON results', `exit ${nc.code}: ${(nc.err || nc.out).slice(0, 300)}`, false);
   for (const r of netcheck?.results ?? []) record(`[browser uid] ${r.check}`, r.expected, `${r.actual} (${r.detail})`, r.expected === r.actual);
 
+  // Provider-side layer: the proxy user may dial out at the firewall level (its address policy is in the
+  // proxy code). With MODAL_OUTBOUND=public, Modal itself must also drop private/metadata destinations.
+  const probe = "const n=require('net');const t=(h,p)=>new Promise(r=>{const s=n.connect({host:h,port:p,timeout:3000});s.on('connect',()=>{s.destroy();r('connected')});s.on('timeout',()=>{s.destroy();r('timeout')});s.on('error',e=>r('error:'+e.code))});(async()=>{console.log(JSON.stringify({metadata:await t('169.254.169.254',80),private:await t('10.0.0.1',443),public:await t('1.1.1.1',443)}))})()";
+  const pr = await sh(`setpriv --reuid=oddproxy --regid=oddproxy --clear-groups /usr/local/bin/node26 -e "${probe.replace(/"/g, '\\"')}"`);
+  let pj: Record<string, string> = {};
+  try { pj = JSON.parse(pr.out); } catch { /* recorded below */ }
+  out.proxyUidDirect = pj;
+  if (outbound === 'public') {
+    record('[proxy uid, Modal allowlist] direct TCP to cloud metadata', 'blocked', pj.metadata ?? pr.err.slice(0, 120), !!pj.metadata && pj.metadata !== 'connected');
+    record('[proxy uid, Modal allowlist] direct TCP to a private address', 'blocked', pj.private ?? pr.err.slice(0, 120), !!pj.private && pj.private !== 'connected');
+    record('[proxy uid, Modal allowlist] direct TCP to a public address', 'allowed', pj.public ?? pr.err.slice(0, 120), pj.public === 'connected');
+  } else {
+    console.log('info  proxy uid direct (no provider allowlist):', JSON.stringify(pj));
+  }
+
   // Browser-level egress through the proxy.
   const ctx = await newScopedContext(provisioned.browser, 'desktop');
   const page = await ctx.newPage();
-  const nav = async (url: string) => page.goto(url, { timeout: 15_000 }).then((r) => `status ${r?.status()}`, (e: Error) => `error ${e.message.split('\n')[0]!.slice(0, 120)}`);
-  let r = await nav('https://example.com/'); record('browser loads a public HTTPS page via the proxy', 'status 200', r, r === 'status 200');
+  const nav = async (url: string) => page.goto(url, { timeout: 15_000 }).then(async (resp) => `status ${resp?.status()} ${((await resp?.text().catch(() => '')) ?? '').slice(0, 40)}`.trim(), (e: Error) => `error ${e.message.split('\n')[0]!.slice(0, 120)}`);
+  let r = await nav('https://example.com/'); record('browser loads a public HTTPS page via the proxy', 'status 200', r, r.startsWith('status 200'));
+  // A refusal is either a browser network error or the proxy's own 403 page, and the proxy must have
+  // logged a denial for that host (so the 403 cannot have come from the target).
   for (const url of ['http://169.254.169.254/latest/meta-data/', 'http://10.0.0.1/', 'http://192.168.0.1/', 'http://127.0.0.1:3000/', 'http://[fd00::1]/', 'http://metadata.google.internal/']) {
-    r = await nav(url); record(`browser refused ${url}`, 'error', r, r.startsWith('error'));
+    const host = new URL(url).hostname.replace(/^\[|\]$/g, '');
+    r = await nav(url);
+    const refused = r.startsWith('error') || (r.startsWith('status 403 Blocked by Oddhound egress policy') && deniedHosts.has(host));
+    record(`browser refused ${url}`, 'proxy refusal', `${r}; proxy logged denial: ${deniedHosts.has(host)}`, refused);
   }
   await ctx.close();
 

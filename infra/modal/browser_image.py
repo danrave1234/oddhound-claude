@@ -17,9 +17,8 @@ image = modal.Image.from_dockerfile(
     context_dir=ROOT,
 ).dockerfile_commands(["ENTRYPOINT []"])
 
-app = modal.App("oddhound-browser")
-
 if __name__ == "__main__":
+    app = modal.App.lookup("oddhound-browser", create_if_missing=True)
     with modal.enable_output():
         built = image.build(app)
     print(f"MODAL_BROWSER_IMAGE_ID={built.object_id}")

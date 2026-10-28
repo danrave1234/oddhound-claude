@@ -1,0 +1,311 @@
+{
+  "at": "2026-10-28T08:37:41.729Z",
+  "sandboxRuntime": "vm",
+  "outbound": "public",
+  "connect": "token",
+  "imageId": "im-6P2J5P3OXzsS65srOXr4Cs",
+  "runId": "canary-58c08aa42e59",
+  "sandboxId": "sb-01M60TH0BBK7AZ6Z5GBZR5Y77F",
+  "startupMs": 14065,
+  "processes": "1 oddproxy     node-MainThread\n      8 pwuser       chrome\n      2 pwuser       chrome_crashpad\n      1 pwuser       node-MainThread",
+  "guestEnvNames": [
+    "--no-first-run --ozone-platform",
+    "BLIS_NUM_THREADS",
+    "CFLAGS",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "MKL_NUM_THREADS",
+    "MODAL_CLOUD_PROVIDER",
+    "MODAL_CONTAINER_ARGUMENTS_PATH",
+    "MODAL_IMAGE_ID",
+    "MODAL_REGION",
+    "MODAL_SANDBOX_ID",
+    "MODAL_TASK_ID",
+    "ODDHOUND_LAB_ENDPOINTS",
+    "ODDHOUND_LAB_MODE",
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "ORT_INTER_OP_NUM_THREADS",
+    "ORT_INTRA_OP_NUM_THREADS",
+    "PATH",
+    "PIP_DEFAULT_TIMEOUT",
+    "PIP_NO_CACHE_DIR",
+    "PIP_ROOT_USER_ACTION",
+    "PLAYWRIGHT_BROWSERS_PATH",
+    "PWD",
+    "PYTHONHASHSEED",
+    "PYTHONPATH",
+    "RUN_WS_PATH",
+    "SOURCE_DATE_EPOCH",
+    "SSL_CERT_DIR",
+    "TERM",
+    "UV_BREAK_SYSTEM_PACKAGES",
+    "andler-pid",
+    "cess-track-uuid"
+  ],
+  "nftables": "table inet oddhound {\n\tchain output {\n\t\ttype filter hook output priority filter; policy accept;\n\t\tmeta skuid 1001 ct state established,related accept\n\t\tmeta skuid 1001 oif \"lo\" ip daddr 127.0.0.1 tcp dport 3128 accept\n\t\tmeta skuid 1001 counter packets 0 bytes 0 drop\n\t\tmeta skuid 997 accept\n\t}\n}",
+  "netcheck": {
+    "uid": 1001,
+    "results": [
+      {
+        "check": "direct TCP to a public IP (bypassing the proxy)",
+        "expected": "blocked",
+        "actual": "blocked",
+        "detail": "timeout"
+      },
+      {
+        "check": "direct TCP to cloud metadata",
+        "expected": "blocked",
+        "actual": "blocked",
+        "detail": "timeout"
+      },
+      {
+        "check": "direct TCP to the lab target (bypassing the proxy)",
+        "expected": "blocked",
+        "actual": "blocked",
+        "detail": "error:EAI_AGAIN"
+      },
+      {
+        "check": "UDP datagram (WebRTC/QUIC/DNS path)",
+        "expected": "blocked",
+        "actual": "blocked",
+        "detail": "error:EPERM"
+      },
+      {
+        "check": "proxy CONNECT to cloud metadata",
+        "expected": "blocked",
+        "actual": "blocked",
+        "detail": "status:403"
+      },
+      {
+        "check": "proxy CONNECT to the local browser control port",
+        "expected": "blocked",
+        "actual": "blocked",
+        "detail": "status:403"
+      },
+      {
+        "check": "proxy CONNECT to a private address",
+        "expected": "blocked",
+        "actual": "blocked",
+        "detail": "status:403"
+      },
+      {
+        "check": "proxy CONNECT to a 6PN/ULA address",
+        "expected": "blocked",
+        "actual": "blocked",
+        "detail": "status:403"
+      },
+      {
+        "check": "proxy CONNECT to a non-web port",
+        "expected": "blocked",
+        "actual": "blocked",
+        "detail": "status:403"
+      },
+      {
+        "check": "proxy CONNECT to the approved lab target",
+        "expected": "allowed",
+        "actual": "allowed",
+        "detail": "status:200"
+      }
+    ],
+    "passed": true
+  },
+  "proxyUidDirect": {
+    "metadata": "timeout",
+    "private": "timeout",
+    "public": "connected"
+  },
+  "httpWithoutToken": "HTTP 401",
+  "checks": [
+    {
+      "check": "browser Sandbox starts (nftables applied, browser server ready, connected)",
+      "expected": "started",
+      "actual": "started in 14065 ms",
+      "pass": true
+    },
+    {
+      "check": "Chromium sandbox verdict (chromiumSandbox: true, non-root)",
+      "expected": "sandbox_on",
+      "actual": "sandbox_on",
+      "pass": true
+    },
+    {
+      "check": "Chromium processes run as the unprivileged browser user",
+      "expected": "pwuser only",
+      "actual": "pwuser,pwuser",
+      "pass": true
+    },
+    {
+      "check": "no platform secrets in any guest process environment",
+      "expected": "none",
+      "actual": "none",
+      "pass": true
+    },
+    {
+      "check": "nftables rules for the browser user are installed",
+      "expected": "table inet oddhound present",
+      "actual": "present",
+      "pass": true
+    },
+    {
+      "check": "[browser uid] direct TCP to a public IP (bypassing the proxy)",
+      "expected": "blocked",
+      "actual": "blocked (timeout)",
+      "pass": true
+    },
+    {
+      "check": "[browser uid] direct TCP to cloud metadata",
+      "expected": "blocked",
+      "actual": "blocked (timeout)",
+      "pass": true
+    },
+    {
+      "check": "[browser uid] direct TCP to the lab target (bypassing the proxy)",
+      "expected": "blocked",
+      "actual": "blocked (error:EAI_AGAIN)",
+      "pass": true
+    },
+    {
+      "check": "[browser uid] UDP datagram (WebRTC/QUIC/DNS path)",
+      "expected": "blocked",
+      "actual": "blocked (error:EPERM)",
+      "pass": true
+    },
+    {
+      "check": "[browser uid] proxy CONNECT to cloud metadata",
+      "expected": "blocked",
+      "actual": "blocked (status:403)",
+      "pass": true
+    },
+    {
+      "check": "[browser uid] proxy CONNECT to the local browser control port",
+      "expected": "blocked",
+      "actual": "blocked (status:403)",
+      "pass": true
+    },
+    {
+      "check": "[browser uid] proxy CONNECT to a private address",
+      "expected": "blocked",
+      "actual": "blocked (status:403)",
+      "pass": true
+    },
+    {
+      "check": "[browser uid] proxy CONNECT to a 6PN/ULA address",
+      "expected": "blocked",
+      "actual": "blocked (status:403)",
+      "pass": true
+    },
+    {
+      "check": "[browser uid] proxy CONNECT to a non-web port",
+      "expected": "blocked",
+      "actual": "blocked (status:403)",
+      "pass": true
+    },
+    {
+      "check": "[browser uid] proxy CONNECT to the approved lab target",
+      "expected": "allowed",
+      "actual": "allowed (status:200)",
+      "pass": true
+    },
+    {
+      "check": "[proxy uid, Modal allowlist] direct TCP to cloud metadata",
+      "expected": "blocked",
+      "actual": "timeout",
+      "pass": true
+    },
+    {
+      "check": "[proxy uid, Modal allowlist] direct TCP to a private address",
+      "expected": "blocked",
+      "actual": "timeout",
+      "pass": true
+    },
+    {
+      "check": "[proxy uid, Modal allowlist] direct TCP to a public address",
+      "expected": "allowed",
+      "actual": "connected",
+      "pass": true
+    },
+    {
+      "check": "browser loads a public HTTPS page via the proxy",
+      "expected": "status 200",
+      "actual": "status 200 <!doctype html><html lang=en><head><meta",
+      "pass": true
+    },
+    {
+      "check": "browser refused http://169.254.169.254/latest/meta-data/",
+      "expected": "proxy refusal",
+      "actual": "status 403 Blocked by Oddhound egress policy; proxy logged denial: true",
+      "pass": true
+    },
+    {
+      "check": "browser refused http://10.0.0.1/",
+      "expected": "proxy refusal",
+      "actual": "status 403 Blocked by Oddhound egress policy; proxy logged denial: true",
+      "pass": true
+    },
+    {
+      "check": "browser refused http://192.168.0.1/",
+      "expected": "proxy refusal",
+      "actual": "status 403 Blocked by Oddhound egress policy; proxy logged denial: true",
+      "pass": true
+    },
+    {
+      "check": "browser refused http://127.0.0.1:3000/",
+      "expected": "proxy refusal",
+      "actual": "status 403 Blocked by Oddhound egress policy; proxy logged denial: true",
+      "pass": true
+    },
+    {
+      "check": "browser refused http://[fd00::1]/",
+      "expected": "proxy refusal",
+      "actual": "status 403 Blocked by Oddhound egress policy; proxy logged denial: true",
+      "pass": true
+    },
+    {
+      "check": "browser refused http://metadata.google.internal/",
+      "expected": "proxy refusal",
+      "actual": "status 403 Blocked by Oddhound egress policy; proxy logged denial: true",
+      "pass": true
+    },
+    {
+      "check": "control endpoint refuses a client without the connect token",
+      "expected": "refused",
+      "actual": "refused: browserType.connect: WebSocket error: wss://a-ta-01m60th0bb99hd0hkaft3t3nxv-2z35w-kv0owfpm7pj628l0majn93d87.w.modal.host",
+      "pass": true
+    },
+    {
+      "check": "plain HTTP request without the token is rejected",
+      "expected": "not 2xx",
+      "actual": "HTTP 401",
+      "pass": true
+    },
+    {
+      "check": "no public tunnel is opened (token mode)",
+      "expected": "none",
+      "actual": "none",
+      "pass": true
+    },
+    {
+      "check": "Sandbox terminated and confirmed after the run",
+      "expected": "confirmed",
+      "actual": "sandbox sb-01M60TH0BBK7AZ6Z5GBZR5Y77F terminated (exit 137)",
+      "pass": true
+    },
+    {
+      "check": "terminated Sandbox no longer listed as running",
+      "expected": "none",
+      "actual": "none",
+      "pass": true
+    },
+    {
+      "check": "independent reaper terminates an orphaned Sandbox",
+      "expected": "terminated",
+      "actual": "reaped [sb-01M60TJ3EDKF04767RV3WDGNF4], exit 137",
+      "pass": true
+    }
+  ],
+  "passed": 31,
+  "failed": 0
+}
