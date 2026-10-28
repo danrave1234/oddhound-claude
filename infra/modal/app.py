@@ -78,8 +78,16 @@ COMMON_ENV = {
 }
 
 
+# Modal's in-container variables point its SDKs at a root-only local socket and carry a container
+# identity token. The Node processes use the Modal token from the oddhound-web Secret against the public
+# API instead, and never see the identity token.
+CONTAINER_ONLY = {"MODAL_SERVER_URL", "MODAL_IDENTITY_TOKEN", "MODAL_IDENTITY_TOKEN_FILE", "MODAL_IS_REMOTE",
+                  "MODAL_TASK_ID", "MODAL_CONTAINER_ARGUMENTS_PATH", "MODAL_REGION"}
+
+
 def node(args: list[str], cwd: str, extra_env: dict | None = None, wait: bool = False):
-    env = {**os.environ, **(extra_env or {}), "HOME": "/home/node"}
+    base = {k: v for k, v in os.environ.items() if k not in CONTAINER_ONLY}
+    env = {**base, **(extra_env or {}), "MODAL_SERVER_URL": "https://api.modal.com", "HOME": "/home/node"}
     p = subprocess.Popen(["node", *args], cwd=cwd, env=env, user="node", group="node")
     if wait:
         code = p.wait()

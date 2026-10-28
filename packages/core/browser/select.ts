@@ -42,7 +42,7 @@ export function modalOptionsFromEnv(env: NodeJS.ProcessEnv = process.env): Modal
     imageId: env.MODAL_BROWSER_IMAGE_ID ?? '',
     sandboxRuntime: rt === 'vm' || rt === 'gvisor' ? rt : undefined,
     connect: env.MODAL_CONNECT === 'tunnel' ? 'tunnel' as const : 'token' as const,
-    region: env.MODAL_REGION || undefined,
+    region: env.ODDHOUND_MODAL_REGION || undefined,
     outboundCidrAllowlist: env.MODAL_OUTBOUND === 'public' ? publicIpv4Cidrs() : undefined,
     inboundCidrAllowlist: env.MODAL_INBOUND_CIDRS ? env.MODAL_INBOUND_CIDRS.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
   };
