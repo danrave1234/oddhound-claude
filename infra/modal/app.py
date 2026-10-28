@@ -71,6 +71,8 @@ COMMON_ENV = {
     "MODAL_CONNECT": "token",
     "MODAL_OUTBOUND": "public",
     "WORKER_WAKE": "modal",
+    # Own queue while the Fly deployment still runs against the same database.
+    "ODDHOUND_RUN_QUEUE": "oddhound-runs-modal",
     "MODAL_APP": "oddhound",
     "MODAL_WORKER_FUNCTION": "worker",
 }

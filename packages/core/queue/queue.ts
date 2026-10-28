@@ -6,7 +6,9 @@ import { Queue, Worker, createPostgresBackend } from 'bullmq';
 import { databaseUrl } from '../db/pool.ts';
 import { wakeWorker } from './wake.ts';
 
-export const RUN_QUEUE = 'oddhound-runs';
+// ODDHOUND_RUN_QUEUE lets two deployments share one database without taking each other's runs
+// (Modal alongside Fly during the migration).
+export const RUN_QUEUE = process.env.ODDHOUND_RUN_QUEUE || 'oddhound-runs';
 
 const makeQueue = () => new Queue(RUN_QUEUE, { connection: databaseUrl() }, createPostgresBackend);
 let queue: ReturnType<typeof makeQueue> | undefined;
