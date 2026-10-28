@@ -12,7 +12,7 @@ Code: `packages/core/browser/modal-runtime.ts` (`BROWSER_RUNTIME=modal`), `tests
 
 | Item | Value |
 |---|---|
-| Browser image | `apps/browser/Dockerfile` unchanged, built on Modal: `im-6P2J5P3OXzsS65srOXr4Cs` (ENTRYPOINT cleared; the worker passes it as the Sandbox command) |
+| Browser image | `apps/browser/Dockerfile` unchanged, built on Modal: `im-TDUtu376fE3iO5AHFRyIpO` (Oct 28 evening; IPv4-first proxy dialing with a 10 s connect bound; first image `im-6P2J5P3OXzsS65srOXr4Cs`) (ENTRYPOINT cleared; the worker passes it as the Sandbox command) |
 | Playwright / Chromium | 1.64.1 (same in worker and image) |
 | Node | 26 (image `node:26-bookworm-slim`; local runs with Node 26.12.1) |
 | Modal | Python client 1.6.3 (deploy/build), JS SDK `modal@0.11.1` (worker, web) |
@@ -102,3 +102,21 @@ are assumed to cost no more. Not yet reconciled against Modal's usage page.
 | **Per month** | **≈ $1 idle + $0.02–0.06 per run**, inside the $30/month Starter allowance |
 
 Fly today: ≈ $15–20/month (always-on web/worker and two demo apps).
+
+## Cloudflare-fronted sites (run de9bc888, October 28)
+
+Run de9bc888 on `preview.studyboost.com` failed `site_unreachable` after two 45 s first-page timeouts.
+Findings in deploy-profile Sandboxes:
+- **Not an egress filter fault.** The Sandbox resolves IPv4 first; both IPv4 addresses connect; IPv6 fails
+  at once (`ENETUNREACH`, no IPv6 route). Hardening anyway: the proxy now tries validated addresses IPv4
+  first with a 10 s connect bound and falls back, so one silently dropped address cannot stall a page.
+  The full canary still passes (32 isolation/egress checks).
+- **Cloudflare's bot protection challenges Modal's egress IPs.** The first load returns the page (200);
+  the next ones get HTTP 403 "Just a moment..." with `cf-mitigated: challenge` (managed challenge), which a
+  headless browser does not pass. Fly's IPs were not challenged in earlier runs.
+- Oddhound now reports this as `blocked` / `site_bot_challenge` with event `site.bot_challenge`, instead
+  of `failed` / `site_unreachable`.
+- **Owner action for StudyBoost:** in Cloudflare for that zone, allow the identifiable Oddhound user agent
+  (`Oddhound/1.0`) past the challenge (a WAF custom rule with action Skip for managed challenges and Super
+  Bot Fight Mode), or turn off Bot Fight Mode for the preview host. On the Free plan Bot Fight Mode cannot
+  be skipped by a rule. A static egress IP (Modal Proxy) to allowlist would be the alternative.
