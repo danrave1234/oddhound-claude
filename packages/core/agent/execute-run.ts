@@ -169,10 +169,13 @@ export async function executeRun(deps: ExecuteDeps, runId: string): Promise<RunS
     await ev('provider.selected', { provider: provider.id, model: provider.model, label: provider.label, priceSource: price.source });
 
     // 3. Fresh isolated browser for this run only.
+    const egress: { exhausted: string | null } = { exhausted: null };
     browser = await deps.runtime.provision({
       runId, lab: deps.lab,
       onEgress: (d) => { if (!d.allowed) void ev('egress.denied', { host: d.host, port: d.port, reason: d.reason }); },
-      onEgressExhausted: (r) => { void ev('egress.exhausted', { reason: r }); abort.abort(); },
+      // The traffic cap ends testing, not the run: the agent loop stops at its next turn and the run still
+      // finalizes (replays that need the network then come back inconclusive, which is recorded as such).
+      onEgressExhausted: (r) => { if (!egress.exhausted) { egress.exhausted = r; void ev('egress.exhausted', { reason: r }); } },
     });
     await setRunStatus(db, runId, generation, 'running', { browserState: 'ready', browserRef: browser.ref, sandboxVerdict: browser.sandboxVerdict });
     await ev('browser.ready', { runtime: browser.runtime, ref: browser.ref, sandbox: browser.sandboxVerdict });
@@ -198,7 +201,7 @@ export async function executeRun(deps: ExecuteDeps, runId: string): Promise<RunS
     // 4. Exploration with the Meta model.
     const candidates: Candidate[] = [];
     const recorded: Recorded = { auth: handoffState ? { kind: 'handoff' } : null, labelsByPath: new Map(), controlsByPath: new Map(), submitByPath: new Map(), acceptedByPath: new Map(), createdBy: new Map() };
-    const loop = await agentLoop({ deps, runId, generation, contract, run, provider, price, session, ev, abort, candidates, recorded });
+    const loop = await agentLoop({ deps, runId, generation, contract, run, provider, price, session, ev, abort, candidates, recorded, egress });
     if (loop.stopReason) stopReason = loop.stopReason;
 
     // 5. Independent verification of every candidate (fresh contexts, fresh identities).
@@ -210,7 +213,7 @@ export async function executeRun(deps: ExecuteDeps, runId: string): Promise<RunS
 
     // Truthful status: a model provider failure is a failed run, not a completed one.
     const ended = loop.stopReason === 'provider_error' ? 'failed'
-      : loop.stopReason?.startsWith('budget_') || loop.stopReason === 'limit_turns' || loop.stopReason === 'limit_actions' ? 'stopped' : 'completed';
+      : loop.stopReason?.startsWith('budget_') || loop.stopReason === 'limit_turns' || loop.stopReason === 'limit_actions' || loop.stopReason === 'egress_cap' ? 'stopped' : 'completed';
     await finish(ended, stopReason);
     return await done();
   } catch (e) {
@@ -265,6 +268,8 @@ type LoopArgs = {
   deps: ExecuteDeps; runId: string; generation: number; contract: RunContract; run: RunRow; provider: ChatProvider;
   price: NonNullable<ReturnType<typeof priceFor>>; session: RunSession; ev: (t: string, p?: Record<string, unknown>) => Promise<number>;
   abort: AbortController; candidates: Candidate[]; recorded: Recorded;
+  /** Set when the run's traffic cap is used up: the loop stops at its next turn. */
+  egress?: { exhausted: string | null };
 };
 
 /** What Oddhound itself observed during exploration, used to ground the model's scenario recipes. */
@@ -970,6 +975,7 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
   try {
     while (!finished) {
       if (turns >= LIMITS.modelTurnsPerRun) return { stopReason: 'limit_turns' };
+      if (a.egress?.exhausted) return { stopReason: 'egress_cap' };
       // Keep enough time for the independent replays of what was found.
       if (Date.now() > expiresAt - verificationReserveMs()) {
         await ev('run.time_reserved', { reason: 'exploration stopped to leave time for verification', candidates: candidates.length });

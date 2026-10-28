@@ -18,9 +18,9 @@ export const LIMITS = {
   judgingReserveMicros: 15 * USD,
   minActionIntervalMs: 300, // polite pacing for the tested site (was 1 s)
   registrationIdentitiesPerRun: 3,
-  targetRequestsPerRun: 6_000,
+  targetRequestsPerRun: 30_000,
   targetConcurrentRequests: 6,
-  targetBytesPerRun: 200 * 1024 * 1024,
+  targetBytesPerRun: 1024 * 1024 * 1024, // 1 GiB (Oct 29): a 38-minute StudyBoost run used 200 MiB; ~$0.04 of egress
   targetBytesPerResource: 8 * 1024 * 1024,
   artifactBytesPerRun: 100 * 1024 * 1024,
   stopContextCloseMs: 5_000,
