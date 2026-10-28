@@ -108,6 +108,13 @@ if (!detailed) {
   const page = await ctx.newPage();
   const nav = async (url: string) => page.goto(url, { timeout: 15_000 }).then(async (resp) => `status ${resp?.status()} ${((await resp?.text().catch(() => '')) ?? '').slice(0, 40)}`.trim(), (e: Error) => `error ${e.message.split('\n')[0]!.slice(0, 120)}`);
   let r = await nav('https://example.com/'); record('browser loads a public HTTPS page via the proxy', 'status 200', r, r.startsWith('status 200'));
+  // Optional real site (e.g. a Cloudflare-fronted, dual-stack origin), loaded three times like a run's first page.
+  const site = arg('site', '');
+  for (let i = 0; site && i < 3; i++) {
+    const t = Date.now();
+    const s = await page.goto(site, { timeout: 45_000, waitUntil: 'domcontentloaded' }).then((x) => `status ${x?.status()}`, (e: Error) => `error ${e.message.split('\n')[0]!.slice(0, 120)}`);
+    record(`browser loads ${site} (attempt ${i + 1})`, 'status 2xx/3xx', `${s} in ${Date.now() - t} ms`, /^status [23]/.test(s));
+  }
   // A refusal is either a browser network error or the proxy's own 403 page, and the proxy must have
   // logged a denial for that host (so the 403 cannot have come from the target).
   for (const url of ['http://169.254.169.254/latest/meta-data/', 'http://10.0.0.1/', 'http://192.168.0.1/', 'http://127.0.0.1:3000/', 'http://[fd00::1]/', 'http://metadata.google.internal/']) {

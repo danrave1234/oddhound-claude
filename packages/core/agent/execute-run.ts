@@ -216,6 +216,10 @@ export async function executeRun(deps: ExecuteDeps, runId: string): Promise<RunS
   } catch (e) {
     if (e instanceof HandoffEnded) {
       await finish('stopped', e.reason);
+    } else if (e instanceof SiteUnreachable && e.kind === 'bot_challenge') {
+      // The owner's bot protection challenged the run's browser: a compatibility block, not a crash.
+      await ev('site.bot_challenge', { url: e.url, detail: e.detail });
+      await finish('blocked', 'site_bot_challenge');
     } else if (e instanceof SiteUnreachable) {
       await ev('site.unreachable', { url: e.url, detail: e.detail });
       await finish('failed', 'site_unreachable');

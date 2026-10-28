@@ -19,10 +19,13 @@ export class ScopeViolation extends Error {}
 export class SiteUnreachable extends Error {
   readonly url: string;
   readonly detail: string;
-  constructor(url: string, detail: string) {
+  /** 'bot_challenge': the site's bot protection (e.g. a Cloudflare managed challenge) refused the run's browser. */
+  readonly kind: 'unreachable' | 'bot_challenge';
+  constructor(url: string, detail: string, kind: 'unreachable' | 'bot_challenge' = 'unreachable') {
     super(`site unreachable: ${url}`);
     this.url = url;
     this.detail = detail;
+    this.kind = kind;
   }
 }
 
@@ -123,15 +126,24 @@ export class RunSession {
       const target = startUrl.startsWith(this.#policy.primaryOrigin) ? startUrl : `${this.#policy.primaryOrigin}/`;
       // First load: generous timeout and one retry, then a clear "site unreachable" instead of a crash.
       let lastError: unknown;
+      let challenged = false;
       for (let attempt = 1; attempt <= 2; attempt++) {
-        try { await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 45_000 }); lastError = undefined; break; }
-        catch (e) { lastError = e; if (attempt < 2) await new Promise((r) => setTimeout(r, 2_000)); }
+        try {
+          const resp = await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+          challenged = resp?.headers()['cf-mitigated'] === 'challenge';
+          lastError = challenged ? new Error(`bot challenge (HTTP ${resp?.status()}, cf-mitigated: challenge)`) : undefined;
+          if (!challenged) break;
+        } catch (e) {
+          lastError = e;
+          challenged = /^just a moment/i.test(await page.title().catch(() => ''));
+        }
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 2_000));
       }
       if (lastError) {
         this.#contexts.delete(key);
         await ctx.close().catch(() => {});
+        throw new SiteUnreachable(target, (lastError as Error).message.split('\n')[0]!.slice(0, 200), challenged ? 'bot_challenge' : 'unreachable');
       }
-      if (lastError) throw new SiteUnreachable(target, (lastError as Error).message.split('\n')[0]!.slice(0, 200));
     }
     return entry.page;
   }

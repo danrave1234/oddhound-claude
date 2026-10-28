@@ -1,12 +1,12 @@
 {
-  "at": "2026-10-28T08:37:41.729Z",
+  "at": "2026-10-28T10:23:52.984Z",
   "sandboxRuntime": "vm",
   "outbound": "public",
   "connect": "token",
-  "imageId": "im-6P2J5P3OXzsS65srOXr4Cs",
-  "runId": "canary-58c08aa42e59",
-  "sandboxId": "sb-01M60TH0BBK7AZ6Z5GBZR5Y77F",
-  "startupMs": 14065,
+  "imageId": "im-TDUtu376fE3iO5AHFRyIpO",
+  "runId": "canary-4e29c2b2e5d1",
+  "sandboxId": "sb-01M610KEAKJEZ5N24JAWJB9MH4",
+  "startupMs": 12013,
   "processes": "1 oddproxy     node-MainThread\n      8 pwuser       chrome\n      2 pwuser       chrome_crashpad\n      1 pwuser       node-MainThread",
   "guestEnvNames": [
     "--no-first-run --ozone-platform",
@@ -122,7 +122,7 @@
     {
       "check": "browser Sandbox starts (nftables applied, browser server ready, connected)",
       "expected": "started",
-      "actual": "started in 14065 ms",
+      "actual": "started in 12013 ms",
       "pass": true
     },
     {
@@ -234,6 +234,24 @@
       "pass": true
     },
     {
+      "check": "browser loads https://preview.studyboost.com/ (attempt 1)",
+      "expected": "status 2xx/3xx",
+      "actual": "status 200 in 1986 ms",
+      "pass": true
+    },
+    {
+      "check": "browser loads https://preview.studyboost.com/ (attempt 2)",
+      "expected": "status 2xx/3xx",
+      "actual": "status 403 in 244 ms",
+      "pass": false
+    },
+    {
+      "check": "browser loads https://preview.studyboost.com/ (attempt 3)",
+      "expected": "status 2xx/3xx",
+      "actual": "status 403 in 253 ms",
+      "pass": false
+    },
+    {
       "check": "browser refused http://169.254.169.254/latest/meta-data/",
       "expected": "proxy refusal",
       "actual": "status 403 Blocked by Oddhound egress policy; proxy logged denial: true",
@@ -272,7 +290,7 @@
     {
       "check": "control endpoint refuses a client without the connect token",
       "expected": "refused",
-      "actual": "refused: browserType.connect: WebSocket error: wss://a-ta-01m60th0bb99hd0hkaft3t3nxv-2z35w-kv0owfpm7pj628l0majn93d87.w.modal.host",
+      "actual": "refused: browserType.connect: WebSocket error: wss://a-ta-01m610keakvgdfxtrq6q05bc9v-2z35w-1wcusqeh5zpcmkvp6egowrad0.w.modal.host",
       "pass": true
     },
     {
@@ -290,7 +308,7 @@
     {
       "check": "Sandbox terminated and confirmed after the run",
       "expected": "confirmed",
-      "actual": "sandbox sb-01M60TH0BBK7AZ6Z5GBZR5Y77F terminated (exit 137)",
+      "actual": "sandbox sb-01M610KEAKJEZ5N24JAWJB9MH4 terminated (exit 137)",
       "pass": true
     },
     {
@@ -302,10 +320,10 @@
     {
       "check": "independent reaper terminates an orphaned Sandbox",
       "expected": "terminated",
-      "actual": "reaped [sb-01M60TJ3EDKF04767RV3WDGNF4], exit 137",
+      "actual": "reaped [sb-01M610MHMB78QNC04EWDEJ9A65,sb-01M60ZX0WM6TBXPFZFCBKRT78X,sb-01M60ZM5DDH0MW5FT45ECJYBJ9], exit 137",
       "pass": true
     }
   ],
-  "passed": 31,
-  "failed": 0
+  "passed": 32,
+  "failed": 2
 }
