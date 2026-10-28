@@ -145,6 +145,16 @@ Built because test accounts, staging copies and bot-check changes were too much 
 | Open from these runs | (1) The safe-default keyword `subscription` also blocks the app's harmless **reads** (`GET /subscriptions/my-subscription`, usage history), which can degrade pages; keyword blocking should apply to navigation and writes, with GET blocking only for effectful words (logout, delete, …). (2) The agent stopped after ~2 minutes and did not use the second identity for the cross-account check. (3) Rerun with explicit rules once the daily quota resets. |
 | Not yet verified on the deployment | The sign-in handoff on Fly, retest on the fixed demo build from the live UI. |
 
+## 3f. Hosting moved to Modal (October 28, 2026, branch `modal-runtime`)
+
+Owner-approved move off Fly. Per-run browser = fresh Modal Sandbox (`runtime: "vm"`); web, worker and both demo
+targets on Modal, scaling to zero; database stays on Neon. Canary 31/31 on the deploy profile (Chromium
+`sandbox_on`, nftables, proxy-only egress, private/metadata refused, connect-token control, terminate + reaper);
+gVisor fails closed (no netfilter). Real demo run cff8d393 completed on Modal, $0.021, 7 findings. Degradations
+(control over Modal's authenticated proxy instead of a private network; workspace-wide Modal token) and cost
+(about $0.02-0.06 compute per run, about $1/month idle): [MODAL_VERIFICATION.md](MODAL_VERIFICATION.md). Fly still
+runs until the owner stops it.
+
 ## 4. Spec gates (R0–R7) — where this build stands
 
 | Gate | State |
