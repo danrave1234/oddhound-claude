@@ -1,10 +1,9 @@
 import Link from 'next/link';
-import { HoundArt, HoundMark, Icon, type IconName } from '@/ui/icons';
+import { HoundMark, Icon, type IconName } from '@/ui/icons';
 import { publicStatus } from '@/lib/status-data';
 import { currentUser } from '@/lib/server';
 import { TryDemoButton } from './try-demo-button';
 import { HeroDemo } from './hero-demo';
-import { HeroTrail } from './hero-trail';
 
 export const dynamic = 'force-dynamic';
 
@@ -44,10 +43,9 @@ export default async function Landing() {
 
       <main>
         <section className="wrap hero3" aria-labelledby="hero-title">
-          <h1 id="hero-title" className="hero3-title">Find what you<br />didn&apos;t test.</h1>
-          <HeroTrail />
           <div className="hero3-grid">
             <div className="hero3-copy">
+              <h1 id="hero-title" className="hero3-title">Find what you didn&apos;t test.</h1>
               <p className="lead">
                 Oddhound is an AI tester running on Meta Muse Spark. It explores your web app in a real, isolated browser, signs up, books,
                 edits and cancels like a curious user, tries the odd things people actually do, and proves what breaks with replayed evidence.
@@ -88,12 +86,9 @@ export default async function Landing() {
         </section>
 
         <section className="wrap proof" aria-labelledby="proof-title">
-          <div className="proof-head">
-            <div className="proof-intro">
-              <h2 id="proof-title" className="sec-title">Evidence first. Nothing invented.</h2>
-              <p className="lead">Every finding points to a rule you wrote and to proof from an independent replay. What wasn&apos;t tested is said plainly.</p>
-            </div>
-            <div className="proof-art" aria-hidden><HoundArt name="found" width={210} /></div>
+          <div className="proof-intro">
+            <h2 id="proof-title" className="sec-title">Evidence first. Nothing invented.</h2>
+            <p className="lead">Every finding points to a rule you wrote and to proof from an independent replay. What wasn&apos;t tested is said plainly.</p>
           </div>
           <div className="proof-grid">
             <article className="proof-feature" aria-label="Illustration of ownership proof and independent replays">
@@ -126,7 +121,7 @@ export default async function Landing() {
                 {status.replayRunId && <Link className="btn btn-lg cta-ghost" href={`/runs/${status.replayRunId}?replay=1`}><Icon name="eye" /> Watch a demo replay</Link>}
               </div>
             </div>
-            <div className="cta-art" aria-hidden><HoundArt name="tracking" width={460} /></div>
+            <span className="cta-mark hide-sm"><HoundMark size={112} /></span>
           </div>
         </section>
       </main>

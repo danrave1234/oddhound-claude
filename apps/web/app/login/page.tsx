@@ -14,7 +14,7 @@ export default async function Login({ searchParams }: { searchParams: Promise<{ 
         <Link href="/" className="btn btn-ghost btn-sm" style={{ justifySelf: 'start' }}><Icon name="back" /> Back to Oddhound</Link>
         <div className="card auth-card rise-in">
           <div style={{ display: 'grid', justifyItems: 'center', textAlign: 'center', gap: 10, marginBottom: 22 }}>
-            <HoundMark size={52} />
+            <HoundMark size={52} tile />
             <h1 className="h1" style={{ fontSize: 24 }}>Sign in to Oddhound</h1>
             <p className="muted" style={{ margin: 0, fontSize: 13.5 }}>Verify your sites and run Oddhound on them.</p>
           </div>

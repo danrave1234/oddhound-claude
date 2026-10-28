@@ -2,13 +2,13 @@
 
 /* ──────────────────────────────────────────────────────────────────────────────
    Oddhound design tokens
-   Apple/macOS-inspired shell with an original Oddhound rust accent.
-   Light = warm neutral, dark = graphite. Only chrome (sidebar, toolbars) is
+   macOS-inspired shell. Neutral greys plus one brand colour (forest green);
+   red, amber and green appear only as status. Light = paper, dark = graphite. Only chrome (sidebar, toolbars) is
    translucent; evidence, logs and findings sit on opaque high-contrast surfaces.
    ────────────────────────────────────────────────────────────────────────────── */
 :root {
   /* Surfaces */
-  --bg: #f1f0ec;
+  --bg: #f3f3f1;
   --surface: #ffffff;
   --surface-2: #f8f8f5;
   --surface-3: #e8e8e2;
@@ -26,19 +26,21 @@
   --separator: rgba(21, 32, 26, 0.1);
   --separator-strong: rgba(21, 32, 26, 0.18);
 
-  /* Brand accent: Oddhound rust */
-  --accent: #1e3b30;
+  /* Brand accent: forest */
+  --accent: #1f3d32;
   --accent-text: #1d5440;            /* accent used as text on tinted fills */
   --accent-strong: #152b23;
   --accent-contrast: #ffffff;
   --accent-soft: rgba(30, 84, 64, 0.11);
   --accent-softer: rgba(30, 84, 64, 0.06);
-  --accent-fill: linear-gradient(180deg, #2a5243 0%, #1c382d 100%);
+  --accent-fill: #1f3d32;
+
+  /* Trail and live markers use the brand colour too (one colour plus status). */
+  --blaze: var(--accent);
+  --blaze-text: var(--accent-text);
+  --blaze-soft: var(--accent-soft);
 
   /* Focus */
-  --blaze: #f2541b;          /* scent trail and live markers (graphics) */
-  --blaze-text: #b03a0d;     /* blaze used as text */
-  --blaze-soft: rgba(242, 84, 27, 0.12);
 
   --focus: #2a6be0;
   --focus-ring: 0 0 0 3px rgba(42, 107, 224, 0.32);
@@ -66,17 +68,13 @@
 
   /* Type */
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-  --font-display: ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "Cascadia Mono", Consolas, monospace;
 
   /* Motion */
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
   --dur: 150ms;
 
-  --hound-face: #ffffff;
-  --hound-line: rgba(21, 32, 26, 0.55);
-  --hound-ear: #8a5a3c;
-  --hound-ink: #15171c;
   --sidebar-w: 236px;
   --toolbar-h: 52px;
   color-scheme: light;
@@ -97,16 +95,13 @@
     --text-3: #9ba39d;
     --separator: rgba(255, 255, 255, 0.08);
     --separator-strong: rgba(255, 255, 255, 0.15);
-    --accent: #8fd0ad;
-    --accent-text: #a7dcc0;
-    --accent-strong: #a3dbbd;
-    --accent-contrast: #0e1d16;
-    --accent-soft: rgba(143, 208, 173, 0.15);
-    --accent-softer: rgba(143, 208, 173, 0.08);
-    --accent-fill: linear-gradient(180deg, #9ad8b7 0%, #82c5a1 100%);
-    --blaze: #ff7a45;
-    --blaze-text: #ff9b70;
-    --blaze-soft: rgba(255, 122, 69, 0.15);
+    --accent: #a3c9b5;
+    --accent-text: #b5d5c4;
+    --accent-strong: #bcdacb;
+    --accent-contrast: #0f1f18;
+    --accent-soft: rgba(163, 201, 181, 0.15);
+    --accent-softer: rgba(163, 201, 181, 0.08);
+    --accent-fill: #a3c9b5;
     --focus: #6aa1ff;
     --focus-ring: 0 0 0 3px rgba(106, 161, 255, 0.38);
     --ok: #6fd693;   --ok-soft: rgba(111, 214, 147, 0.13);
@@ -114,10 +109,6 @@
     --warn: #f2c35e; --warn-soft: rgba(242, 195, 94, 0.13);
     --info: #aeb2ff; --info-soft: rgba(174, 178, 255, 0.13);
     --muted-soft: #29302b;
-    --hound-face: #eef1ee;
-    --hound-line: transparent;
-    --hound-ear: #a7744f;
-    --hound-ink: #0e1512;
     --hairline: inset 0 1px 0 rgba(255, 255, 255, 0.06);
     --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.45);
     --shadow-2: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 24px -8px rgba(0, 0, 0, 0.55);
@@ -146,8 +137,8 @@ small { font-size: 12.5px; line-height: 1.45; }
 hr.sep { border: 0; border-top: 1px solid var(--separator); margin: 0; }
 
 /* ── Typography scale ───────────────────────────────────────────────────────── */
-.display { font-family: var(--font-display); font-size: clamp(36px, 6.4vw, 62px); line-height: 1.02; letter-spacing: -0.035em; font-weight: 750; margin: 0; }
-.h1 { font-family: var(--font-display); font-size: 26px; line-height: 1.2; letter-spacing: -0.02em; font-weight: 700; margin: 0; }
+.display { font-family: var(--font-display); font-size: clamp(36px, 6.4vw, 62px); line-height: 1.04; letter-spacing: -0.038em; font-weight: 620; margin: 0; }
+.h1 { font-family: var(--font-display); font-size: 26px; line-height: 1.2; letter-spacing: -0.024em; font-weight: 640; margin: 0; }
 .h2 { font-size: 17px; line-height: 1.3; letter-spacing: -0.01em; font-weight: 650; margin: 0; }
 .h3 { font-size: 14.5px; line-height: 1.35; font-weight: 600; margin: 0; }
 .lead { font-size: 17px; line-height: 1.6; color: var(--text-2); margin: 0; }
@@ -279,7 +270,7 @@ fieldset { min-width: 0; }
 .sidebar { background: var(--sidebar); backdrop-filter: saturate(170%) blur(22px); -webkit-backdrop-filter: saturate(170%) blur(22px);
   border-right: 1px solid var(--separator); padding: 12px 10px; display: flex; flex-direction: column; gap: 2px; position: sticky; top: 0; height: 100vh; height: 100dvh; box-sizing: border-box; z-index: 6; }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .sidebar { background: var(--surface-2); } .toolbar, .pane-head, .site-nav { background: var(--surface); } }
-.brand { display: inline-flex; align-items: center; gap: 9px; color: var(--text); font-weight: 700; font-size: 15px; letter-spacing: -0.01em; text-decoration: none; }
+.brand { display: inline-flex; align-items: center; gap: 9px; color: var(--text); font-weight: 650; font-size: 15px; letter-spacing: -0.012em; text-decoration: none; }
 .brand:hover { text-decoration: none; }
 .sidebar .brand { padding: 6px 8px 16px; }
 .sidebar .nav-label { padding: 10px 10px 4px; font-size: 12px; font-weight: 600; color: var(--text-3); }
@@ -437,7 +428,6 @@ pre.brief { white-space: pre-wrap; font-family: var(--mono); font-size: 12px; li
 .kicker { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text-2); font-weight: 550; margin: 0; }
 .kicker .rule { width: 28px; height: 2px; border-radius: 2px; background: var(--accent); }
 .hero-visual { position: relative; padding-top: 86px; min-width: 0; }
-.hero-visual .hound-figure { position: absolute; top: 0; right: 40px; z-index: 0; }
 .hero-visual .loop { position: relative; z-index: 1; }
 /* "How a run works" panel */
 .loop { background: var(--surface); border: 1px solid var(--separator); border-radius: var(--radius-xl); box-shadow: var(--shadow-3); overflow: hidden; }
@@ -547,7 +537,6 @@ details.disclosure > .disclosure-body { padding: 4px 14px 16px; display: grid; g
   .principle { gap: 14px; }
   .paths { padding-bottom: 48px; }
   .hero-visual { padding-top: 64px; }
-  .hero-visual .hound-figure { right: 16px; width: 100px; height: 100px; }
   .hero-ctas { display: grid; grid-template-columns: minmax(0, 1fr); width: 100%; }
   .hero-ctas > * { width: 100%; }
   .hero-ctas .btn { width: 100%; }
@@ -574,14 +563,9 @@ details.disclosure > .disclosure-body { padding: 4px 14px 16px; display: grid; g
   .fade-in { animation: oh-fade-in 180ms var(--ease) both; }
   .rise-in { animation: oh-rise-in 320ms var(--ease) both; }
   .rise-in.d1 { animation-delay: 40ms; } .rise-in.d2 { animation-delay: 80ms; } .rise-in.d3 { animation-delay: 120ms; }
-  .brand:hover .hound-ear, .empty:hover .hound-ear { animation: oh-ear 520ms var(--ease); transform-origin: 12px 9px; transform-box: view-box; }
-  .brand:hover .hound-arcs, .hero-visual .hound-arcs, .empty .hound-arcs { animation: oh-sniff 1.6s var(--ease) 1; }
-  .hero-visual .hound-arcs { animation-delay: 500ms; animation-iteration-count: 2; }
   .underline-word path { stroke-dasharray: 120; stroke-dashoffset: 120; animation: oh-draw 700ms 300ms var(--ease) forwards; }
   .pop-in { animation: oh-pop 220ms var(--ease) both; }
   .arrive { animation: oh-arrive 1.4s var(--ease) 1; }
-  @keyframes oh-ear { 0%, 100% { transform: rotate(0); } 35% { transform: rotate(9deg); } 70% { transform: rotate(-4deg); } }
-  @keyframes oh-sniff { 0%, 100% { opacity: 1; transform: none; } 30% { opacity: .35; transform: translateX(-0.6px); } 60% { opacity: 1; transform: translateX(0.6px); } }
   @keyframes oh-draw { to { stroke-dashoffset: 0; } }
   @keyframes oh-pop { from { opacity: 0; transform: scale(.92); } to { opacity: 1; transform: none; } }
   @keyframes oh-arrive { from { background-color: var(--accent-soft); } to { background-color: transparent; } }

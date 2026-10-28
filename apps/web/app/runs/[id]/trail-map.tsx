@@ -2,6 +2,7 @@
 // Pages the agent reached, laid out as stops on a winding trail. The hound walks to each new stop
 // as it is recorded (or replayed). Drawn in pixel units so labels stay legible at any width.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { HOUND_PATH, HOUND_VIEWBOX } from '@/ui/icons';
 
 export type TrailPage = { key: string; route: string; title: string; device: string };
 
@@ -94,13 +95,10 @@ export function TrailMap({ pages, live }: { pages: TrailPage[]; live: boolean })
         {last && (
           <g className="tmap-hound" style={{ transform: `translate(${last.x}px, ${last.y - 30}px)` }}>
             <g style={{ transform: facingLeft ? 'scaleX(-1)' : undefined }}>
-              <g transform="translate(-17 -16)">
-                <path d="M9.4 8.6C10.9 6.7 13.5 6 15.9 6.5c2 .4 3.4 1.8 4.5 3.4l4.9 2.5c1.4.8 1.8 2.5.9 3.8-.6.8-1.6 1.1-2.6.9l-3-.4c-.6 1.8-1.6 3.6-2.7 4.8l-1.2 4H10.4c.4-2.8 0-5.2-1.2-7.2-1.3-2.3-1.4-7.2.2-9.7z" fill="var(--hound-face)" stroke="var(--hound-line)" strokeWidth=".7" />
-                <path d="M11.3 8.4c-1.9 1-2.9 3.9-2.5 7.3.3 2.6 1.4 4.8 2.8 5.2 1.1.3 1.8-.7 1.9-2.1.2-3.3.1-7.1-.6-9.3-.3-1-1-1.4-1.6-1.1z" fill="var(--hound-ear)" />
-                <circle cx="17.4" cy="11" r="1.05" fill="var(--hound-ink)" /><circle cx="25.5" cy="14.1" r="1.2" fill="var(--hound-ink)" />
-                <path d="M10.6 22.4h6.5l-.4 1.7h-6.1z" fill="var(--blaze)" />
-                {live && <g key={last.key} className="tmap-sniff" stroke="var(--blaze)" strokeWidth="1.3" strokeLinecap="round" fill="none"><path d="M28.1 12.4a2.6 2.6 0 0 1 0 3.6" /><path d="M30 10.9a4.8 4.8 0 0 1 0 6.6" opacity=".55" /></g>}
-              </g>
+              <svg x={-14} y={-15} width={28} height={28} viewBox={HOUND_VIEWBOX} overflow="visible">
+                <path d={HOUND_PATH} fill="currentColor" fillRule="evenodd" />
+                {live && <g key={last.key} className="tmap-sniff" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" fill="none"><path d="M46 26a3.4 3.4 0 0 1 0 5" /><path d="M48.6 23.6a6.6 6.6 0 0 1 0 9.8" opacity=".55" /></g>}
+              </svg>
             </g>
           </g>
         )}

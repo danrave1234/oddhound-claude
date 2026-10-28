@@ -1,15 +1,13 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { Shell } from '@/ui/shell';
-import { HoundArt, Icon } from '@/ui/icons';
+import { HoundMark, Icon } from '@/ui/icons';
 import { currentUser, db, mayScanVerifiedSites } from '@/lib/server';
 import { publicStatus } from '@/lib/status-data';
 import { QuickDemoTile } from './quick-demo';
 
 export const dynamic = 'force-dynamic';
 
-const TINTS = ['#a33b17', '#3f46a3', '#1d6b3a', '#0f6672', '#7a3a8c', '#8a5a00'];
-const tint = (name: string) => TINTS[[...name].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % TINTS.length];
 const monogram = (name: string) => (name.replace(/^https?:\/\//, '').match(/[A-Za-z0-9]/g) ?? ['?']).slice(0, 2).join('').toUpperCase();
 export const metadata = { title: 'Projects' };
 
@@ -47,7 +45,7 @@ export default async function Projects() {
 
       {projects.length === 0 ? (
         <div className="card empty">
-          <div className="empty-illo" aria-hidden><HoundArt name="tracking" width={340} /></div>
+          <span className="empty-mark"><HoundMark size={36} /></span>
           <h2 className="h2">No sites yet</h2>
           <p>Add a site you own, prove it with a file, DNS record or meta tag, and start your first run.</p>
           {allowed && <div className="actions"><Link className="btn btn-primary" href="/app/projects/new"><Icon name="plus" /> Add a site</Link></div>}
@@ -57,7 +55,7 @@ export default async function Projects() {
           {projects.map((p, i) => (
             <Link key={p.id} role="listitem" className="proj-card" href={`/app/projects/${p.id}`}>
                 <span className="proj-head">
-                  <span className="monogram" style={{ background: tint(p.name) }} aria-hidden>{monogram(p.name)}</span>
+                  <span className="monogram" aria-hidden>{monogram(p.name)}</span>
                   <span style={{ minWidth: 0, flex: 1 }}>
                     <span className="h3 truncate" style={{ display: 'block' }}>{p.name}</span>
                     <span className="mono muted truncate" style={{ display: 'block', fontSize: 12 }}>{p.origin}</span>

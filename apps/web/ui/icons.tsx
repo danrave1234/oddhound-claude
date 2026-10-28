@@ -72,56 +72,29 @@ export function Icon({ name, size = 16, label }: { name: IconName; size?: 16 | 2
 }
 
 /* ── Brand ───────────────────────────────────────────────────────────────────── */
-// Brand colours are fixed (not themed) so the mark reads the same everywhere.
-// Field palette: forest tile, cream hound with a brown ear, blaze-orange collar and scent.
-const FOREST = '#1e3b30', EAR = '#8a5a3c', CREAM = '#fbf7ef', INK = '#15171c', BLAZE = '#f2541b';
+// The Oddhound mark: a hound's head in profile with a long drop ear, built from a
+// few circles and a hull (see public/brand/PROVENANCE.md). One colour, always.
+export const HOUND_PATH = 'M20.1 7.7 19.4 7.6 18.5 7.5 17.8 7.5 17.1 7.5 16.4 7.6 15.5 7.8 14.6 8.1 13.9 8.4 13.3 8.7 12.5 9.2 12 9.7 11.3 10.3 10.8 10.8 10.4 11.3 10 11.9 9.5 12.7 9.1 13.8 8.7 14.9 8.6 16.1 8.5 16.8 8.5 17.5 8.6 18.6 8.9 19.8 9.3 20.9 9.8 21.8 10.3 27 16.7 10.5 16.9 10.1 17.1 9.7 17.5 9.2 18 8.8 18.5 8.4 19 8.2 19.6 8 20.2 7.9 20.8 7.9ZM20.3 9.6 20 9.7 19.6 9.8 19.1 10 18.9 10.2 18.6 10.5 18.4 10.8 18.3 11 11.7 28.1 11.5 28.6 11.4 29.3 11.3 29.9 11.3 30.5 11.4 31.1 11.5 31.6 11.6 32.2 11.9 32.7 12.1 33.2 12.5 33.7 12.8 34.2 13.2 34.6 13.7 34.9 14.2 35.3 14.7 35.5 15.2 35.8 15.8 35.9 16.3 36 16.9 36.1 17.5 36.1 18.1 36 18.6 35.9 19.2 35.8 19.7 35.5 20.2 35.3 20.7 34.9 21.2 34.6 21.6 34.2 21.9 33.7 22.3 33.2 22.5 32.7 22.8 32.2 22.9 31.6 23 31.1 23.1 30.2 22.9 11.7 22.8 11.2 22.6 10.9 22.4 10.5 22 10.1 21.6 9.9 21.2 9.7 20.7 9.6ZM26.8 13.4 26.3 12.3 25.9 11.7 25.5 11.2 25 10.6 24.6 10.1 23.6 9.3 24.1 10 24.4 10.6 24.5 11.3 24.6 12 24.8 30.4 24.7 31.3 24.5 32.2 24.3 33 23.9 33.8 23.4 34.6 22.8 35.3 22 36.1 21.3 36.6 20.4 37.1 19.6 37.4 18.7 37.7 17.7 37.8 16.7 37.8 15.7 37.7 14.8 37.4 14 37.1 13.1 36.6 12.4 36.1 11.7 35.4 11.1 34.7 11.8 41.5 24.4 41.5 26.1 30.9 32.1 35.4 32.6 35.7 33.1 35.9 33.6 36 34.2 36 34.6 36 35 35.9 35.4 35.7 35.8 35.5 42.2 31.5 42.5 31.3 42.9 30.9 43.2 30.5 43.5 30.1 43.7 29.6 43.9 29 43.9 28.4 43.9 27.9 43.7 27.2 43.5 26.7 43.2 26.3 42.8 25.8 42.4 25.4 28.5 15.3 27.8 14.8 27.2 14.5ZM28.6 17.6 28.6 17.9 28.5 18.2 28.3 18.5 28.1 18.8 27.9 18.9 27.6 19.1 27.3 19.2 27 19.2 26.6 19.2 26.4 19.1 26.1 18.9 25.8 18.7 25.6 18.5 25.5 18.2 25.4 17.9 25.4 17.6 25.4 17.2 25.5 16.9 25.7 16.7 25.9 16.4 26.1 16.2 26.4 16.1 26.7 16 27 16 27.4 16 27.6 16.1 27.9 16.3 28.2 16.5 28.4 16.7 28.5 17 28.6 17.3Z';
+export const HOUND_VIEWBOX = '8.2 6.5 36 36';
 
-/** Hound head in profile, facing right, with a long ear and scent arcs. Drawn on a 32px grid. */
-function HoundHead({ ear = EAR, face = CREAM, ink = INK, arcs = BLAZE, collar = BLAZE, line }: { ear?: string; face?: string; ink?: string; arcs?: string; collar?: string; line?: string }) {
+/**
+ * One-colour hound mark. It takes the surrounding text colour, so it is ink on
+ * light surfaces and white on dark ones. `tile` puts it on the accent square
+ * used for the app icon. Decorative unless `title` is given.
+ */
+export function HoundMark({ size = 24, title, tile = false }: { size?: number; title?: string; tile?: boolean }) {
+  const a11y = title ? { role: 'img', 'aria-label': title } : { 'aria-hidden': true };
+  if (tile) {
+    return (
+      <svg className="hound-mark hound-tile" width={size} height={size} viewBox="0 0 48 48" focusable="false" {...a11y} style={{ flex: 'none', display: 'block' }}>
+        <rect width="48" height="48" rx="11" fill="var(--accent)" />
+        <svg x="7" y="7" width="34" height="34" viewBox={HOUND_VIEWBOX}><path d={HOUND_PATH} fill="var(--accent-contrast)" fillRule="evenodd" /></svg>
+      </svg>
+    );
+  }
   return (
-    <g className="hound-head">
-      <path d="M9.4 8.6C10.9 6.7 13.5 6 15.9 6.5c2 .4 3.4 1.8 4.5 3.4l4.9 2.5c1.4.8 1.8 2.5.9 3.8-.6.8-1.6 1.1-2.6.9l-3-.4c-.6 1.8-1.6 3.6-2.7 4.8l-1.2 4H10.4c.4-2.8 0-5.2-1.2-7.2-1.3-2.3-1.4-7.2.2-9.7z" fill={face} />
-      <path className="hound-ear" d="M11.3 8.4c-1.9 1-2.9 3.9-2.5 7.3.3 2.6 1.4 4.8 2.8 5.2 1.1.3 1.8-.7 1.9-2.1.2-3.3.1-7.1-.6-9.3-.3-1-1-1.4-1.6-1.1z" fill={ear} />
-      <circle cx="17.4" cy="11" r="1.05" fill={ink} />
-      <circle cx="25.5" cy="14.1" r="1.2" fill={ink} />
-      <path d="M10.6 22.4h6.5l-.4 1.7h-6.1z" fill={collar} />
-      <g className="hound-arcs" stroke={arcs} strokeWidth="1.3" strokeLinecap="round" fill="none">
-        <path d="M28.1 12.4a2.6 2.6 0 0 1 0 3.6" opacity=".9" />
-        <path d="M30 10.9a4.8 4.8 0 0 1 0 6.6" opacity=".55" />
-      </g>
-    </g>
-  );
-}
-
-/** Oddhound app mark (AI-generated with Recraft V4.1, see public/brand/PROVENANCE.md). Decorative by default. */
-export function HoundMark({ size = 24, title }: { size?: number; title?: string }) {
-  const px = size <= 32 ? 64 : size <= 64 ? 128 : 256;
-  return (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img className="hound-mark" src={`/brand/oddhound-icon-${px}.png`} srcSet={`/brand/oddhound-icon-${px}.png 1x, /brand/oddhound-icon-${Math.min(px * 2, 512)}.png 2x`}
-      width={size} height={size} alt={title ?? ''} style={{ flex: 'none', display: 'block' }} />
-  );
-}
-
-const ART = {
-  tracking: { src: '/brand/hound-tracking.png', w: 1600, h: 769 },
-  found: { src: '/brand/hound-found.png', w: 720, h: 753 },
-} as const;
-
-/** Mascot illustrations: the hound tracking a scent across web pages, and the hound pointing at a flagged problem. */
-export function HoundArt({ name, width, className }: { name: keyof typeof ART; width: number; className?: string }) {
-  const a = ART[name];
-  return (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img className={className} src={a.src} width={width} height={Math.round((width * a.h) / a.w)} alt="" loading="lazy" decoding="async" style={{ display: 'block', maxWidth: '100%', height: 'auto' }} />
-  );
-}
-
-/** Larger mascot for the landing page and empty states (decorative). */
-export function HoundFigure({ size = 72 }: { size?: number }) {
-  return (
-    <svg className="hound-figure" width={size} height={size} viewBox="4 3 30 26" aria-hidden focusable="false" style={{ flex: 'none' }}>
-      <HoundHead face="var(--hound-face)" ear="var(--hound-ear)" ink="var(--hound-ink)" arcs="var(--blaze)" collar="var(--blaze)" line="var(--hound-line)" />
+    <svg className="hound-mark" width={size} height={size} viewBox={HOUND_VIEWBOX} focusable="false" {...a11y} style={{ flex: 'none', display: 'block' }}>
+      <path d={HOUND_PATH} fill="currentColor" fillRule="evenodd" />
     </svg>
   );
 }
