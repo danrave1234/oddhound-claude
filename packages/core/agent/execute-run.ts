@@ -1783,8 +1783,15 @@ async function verifyCandidates(v: { db: Db; runId: string; generation: number; 
     // A cross-actor replay only shows a leak of private data when the site itself keeps the record off
     // the other account's list; otherwise the record may be public by design.
     const privacyUnproven = c.scenario.kind === 'cross_actor' && attempts.some((a) => a.outcome === 'failed' && a.details.privacyEstablished === false);
+    // A batch whose checked step only expected some wording (text shown or not shown) proves the agent's guess
+    // of the page's words was wrong, not that a rule broke ("Saved" vs "Profile updated"). Kept for review.
+    const oracle = c.scenario.kind === 'batch' ? c.scenario.steps[c.scenario.oracleStep - 1]?.expect : undefined;
+    const wordingOnly = Boolean(oracle && !oracle.outcome && !oracle.path && (oracle.text_visible || oracle.text_absent));
     const hypothesisOnly = Boolean(c.hypothesis) || privacyUnproven;
-    if (hypothesisOnly && outcomes.every((o) => o === 'failed')) {
+    if (wordingOnly && outcomes.every((o) => o === 'failed')) {
+      verification = 'inconclusive'; category = 'needs_review';
+      limitations = 'Reproduced 2/2, but the check was only on wording the agent expected to see. Different wording is not proof that the rule broke; review the evidence.';
+    } else if (hypothesisOnly && outcomes.every((o) => o === 'failed')) {
       verification = 'inconclusive'; category = 'needs_review';
       limitations = `Reproduced 2/2, but no explicit or owner-approved rule covers it, so it is for review, not a verified issue: ${c.hypothesis ?? 'actor B\'s own list also showed the record, so it may be public by design.'}`;
     } else if (outcomes.every((o) => o === 'failed')) {

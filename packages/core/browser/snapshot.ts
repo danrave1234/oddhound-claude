@@ -294,7 +294,16 @@ export function formatObservation(o: Observation): string {
   if (o.invalid?.length) lines.push(`browser marks invalid: ${o.invalid.map((i) => `${JSON.stringify(i.label)} (${i.message})`).join(' | ')}`);
   if (o.statedLimits?.length) lines.push(`limits stated in page text: ${o.statedLimits.map((t) => JSON.stringify(t)).join(' | ')}`);
   for (const f of o.forms) lines.push(`form#${f.index} ${f.method.toUpperCase()} ${f.action}${f.noValidate ? ' novalidate' : ''}`);
-  for (const e of o.elements) {
+  // With a dialog open, the controls behind it cannot be used: show the dialog's own controls first and fold the
+  // covered ones into one line, so the agent acts inside the dialog or closes it instead of fighting the overlay.
+  const inDialog = o.elements.filter((e) => e.region === 'dialog');
+  const covered = inDialog.length ? o.elements.filter((e) => e.region !== 'dialog' && e.coveredBy) : [];
+  if (inDialog.length) {
+    const close = inDialog.find((e) => /^(close|cancel|done|×|x|dismiss)$/i.test(e.label.trim()));
+    lines.push(`DIALOG OPEN: ${inDialog.length} control(s) inside it are listed first.${covered.length ? ` ${covered.length} control(s) behind it are covered and left out.` : ''} Act inside the dialog, or close it${close ? ` with [${close.ref}] "${close.label}"` : ' (Escape or its close button)'} before using the page behind it.`);
+  }
+  const shown = inDialog.length ? [...inDialog, ...o.elements.filter((e) => e.region !== 'dialog' && !e.coveredBy)] : o.elements;
+  for (const e of shown) {
     const attrs = [
       e.role && `role=${e.role}`, e.type && `type=${e.type}`, e.name && `name=${e.name}`, e.required && 'required',
       e.min !== undefined && `min=${e.min}`, e.max !== undefined && `max=${e.max}`, e.step !== undefined && `step=${e.step}`,

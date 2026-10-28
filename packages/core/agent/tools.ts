@@ -200,7 +200,7 @@ const form = s({ path: { type: 'string' }, fields: fieldMap, submit: { type: 'st
 
 export const TOOL_DEFINITIONS: ToolDefinition[] = [
   { type: 'function', function: { name: 'observe', description: 'Return a compact observation of the current page with element references. Set screenshot=true only when layout matters.', parameters: s({ screenshot: { type: 'boolean' } }) } },
-  { type: 'function', function: { name: 'navigate', description: 'Open a path on the verified site (same origin only), e.g. "/bookings".', parameters: s({ path: { type: 'string' } }, ['path']) } },
+  { type: 'function', function: { name: 'navigate', description: 'Open a path on the verified site (same origin only), e.g. "/items".', parameters: s({ path: { type: 'string' } }, ['path']) } },
   { type: 'function', function: { name: 'click', description: 'Click an element by reference, like a normal user.', parameters: s({ ref: refProp }, ['ref']) } },
   { type: 'function', function: { name: 'fill', description: 'Type a value into an input, textarea or editable region. Do not use for passwords.', parameters: s({ ref: refProp, value: fillValueProp }, ['ref', 'value']) } },
   { type: 'function', function: { name: 'fill_credential', description: 'Fill a username/email or password field from a credential reference. You never see the secret.', parameters: s({ ref: refProp, credential_ref: { type: 'string' }, field: { type: 'string', enum: ['username', 'password'] } }, ['ref', 'credential_ref', 'field']) } },
@@ -214,7 +214,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   { type: 'function', function: { name: 'set_device', description: 'Switch to the desktop (1440x900) or mobile (390x844) profile for the current actor.', parameters: s({ device: { type: 'string', enum: ['desktop', 'mobile'] } }, ['device']) } },
   { type: 'function', function: { name: 'use_actor', description: 'Switch to actor A or B. Each actor has its own isolated session (for two-account checks).', parameters: s({ actor: { type: 'string', enum: ['A', 'B'] } }, ['actor']) } },
   { type: 'function', function: { name: 'boundary_values', description: 'Get boundary test values generated in code (no browser action).', parameters: s({ kind: { type: 'string', enum: ['integer', 'text', 'date'] }, min: { type: 'number' }, max: { type: 'number' } }, ['kind']) } },
-  { type: 'function', function: { name: 'update_workflow', description: 'Name and update a workflow you discovered (e.g. "Registration", "Create booking").', parameters: s({ name: { type: 'string' }, status: { type: 'string', enum: ['discovered', 'exploring', 'testing', 'blocked', 'completed'] }, summary: { type: 'string' } }, ['name', 'status', 'summary']) } },
+  { type: 'function', function: { name: 'update_workflow', description: 'Name and update a workflow you discovered (e.g. "Registration", "Create item").', parameters: s({ name: { type: 'string' }, status: { type: 'string', enum: ['discovered', 'exploring', 'testing', 'blocked', 'completed'] }, summary: { type: 'string' } }, ['name', 'status', 'summary']) } },
   {
     type: 'function', function: {
       name: 'report_candidate',
@@ -267,9 +267,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     type: 'function', function: {
       name: 'run_scenario_batch',
-      description: 'Plan and run a scenario of 5-15 browser steps toward one goal in ONE call, each step with an expectation where you have one. Oddhound runs the steps at 1 action/s with the usual checks and comes back early only on a surprise: a failed or undecidable expectation, an element that is gone after the page changed, a new page reached by a step without an expectation, a detected error, a dialog, or a policy block. Target a control with ref (from the latest observation) on the current page, or with label (its visible text, exactly as shown, e.g. "Party size" or "Book table") on any page a step reaches later: refs from older observations do not work after the page changes, labels do. You get one observation at the end.',
+      description: 'Plan and run a scenario of 5-15 browser steps toward one goal in ONE call, each step with an expectation where you have one. Oddhound runs the steps (about 3 actions/s) with the usual checks and comes back early only on a surprise: a failed or undecidable expectation, an element that is gone after the page changed, a new page reached by a step without an expectation, a detected error, a dialog, or a policy block. Target a control with ref (from the latest observation) on the current page, or with label (its visible text, exactly as shown, e.g. "Quantity" or "Save") on any page a step reaches later: refs from older observations do not work after the page changes, labels do. You get one observation at the end.',
       parameters: s({
-        goal: { type: 'string', description: 'What this batch tests, e.g. "party size 0 and 9 are rejected; 8 is accepted"' },
+        goal: { type: 'string', description: 'What this batch tests, e.g. "quantity 0 and 101 are rejected; 100 is accepted"' },
         steps: { type: 'array', maxItems: 15, items: { oneOf: [
           s({ tool: { const: 'click' }, ref: refProp, label: labelProp, expect: expectProp }, ['tool']),
           s({ tool: { const: 'fill' }, ref: refProp, label: labelProp, value: fillValueProp, expect: expectProp }, ['tool', 'value']),
@@ -299,18 +299,18 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     type: 'function', function: {
       name: 'check_claim',
-      description: 'Right after a save whose page reports success (e.g. "Saved", "Booking updated"), check that it is true. Give the success message exactly as shown (omit claim if the page showed none) and the labels of the fields you saved. Oddhound reloads the page the save landed on, reopens revisit_path (the record\'s own page, if it has one), and compares the saved values itself, waiting a few seconds before calling anything missing.',
+      description: 'Right after a save whose page reports success (e.g. "Saved", "Profile updated"), check that it is true. Give the success message exactly as shown (omit claim if the page showed none) and the labels of the fields you saved. Oddhound reloads the page the save landed on, reopens revisit_path (the record\'s own page, if it has one), and compares the saved values itself, waiting a few seconds before calling anything missing.',
       parameters: s({
         claim: { type: 'string', description: 'The success message exactly as the page shows it. Omit when the page showed none.' },
         fields: { type: 'array', maxItems: 6, items: { type: 'string' }, description: 'Labels of the fields filled in the last submitted form whose values should now be saved, e.g. ["Bio", "Display name"].' },
-        revisit_path: { type: 'string', description: 'Optional: the record\'s own page or edit form, e.g. "/bookings/12" or "/profile".' },
+        revisit_path: { type: 'string', description: 'Optional: the record\'s own page or edit form, e.g. "/items/12" or "/profile".' },
       }, ['fields']),
     },
   },
   {
     type: 'function', function: {
       name: 'check_cross_actor',
-      description: 'Check that another account cannot see or change a record actor A created in this run. Give the record\'s page (its URL path from this run, e.g. "/bookings/3" or "/bookings/3/edit"). Oddhound signs up actor B itself, confirms A can see the record, opens exactly that URL as B, presses up to two controls B can see (try_controls, e.g. ["Cancel booking"]), and judges the result. Only records Oddhound saw actor A create can be used; never guess ids.',
+      description: 'Check that another account cannot see or change a record actor A created in this run. Give the record\'s page (its URL path from this run, e.g. "/items/3" or "/items/3/edit"). Oddhound signs up actor B itself, confirms A can see the record, opens exactly that URL as B, presses up to two controls B can see (try_controls, e.g. ["Delete"]), and judges the result. Only records Oddhound saw actor A create can be used; never guess ids.',
       parameters: s({
         path: { type: 'string' },
         try_controls: { type: 'array', maxItems: 2, items: { type: 'string' }, description: 'Visible button or link labels on that page to press as actor B (they change only this run\'s own test record).' },
@@ -322,7 +322,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       name: 'check_two_tabs',
       description: 'Check for lost updates: Oddhound opens the edit form at path (a record you created in this run) in two tabs, saves first.value into first.field in tab 1, then saves second.value into second.field from the out-of-date tab 2, and reopens the record. A save that silently undoes the other tab\'s change is a finding. Give rule_id only when an owner rule covers this.',
       parameters: s({
-        path: { type: 'string', description: 'Edit form of a record created in this run, e.g. "/bookings/3/edit".' },
+        path: { type: 'string', description: 'Edit form of a record created in this run, e.g. "/items/3/edit".' },
         first: s({ field: { type: 'string' }, value: { type: 'string' } }, ['field', 'value']),
         second: s({ field: { type: 'string' }, value: { type: 'string' } }, ['field', 'value']),
         rule_id: { type: 'string' },
@@ -335,9 +335,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       description: 'Register a numeric invariant the current page should satisfy; Oddhound reads and parses the numbers itself, checks it now and again after every later step on this page. sum: the number after total_label equals the sum of the column values in the table. count: the number after total_label equals the number of table rows. Give the evidence on the page that implies it, and rule_id only when an owner rule states it.',
       parameters: s({
         kind: { type: 'string', enum: ['sum', 'count'] },
-        total_label: { type: 'string', description: 'Text right before the total, exactly as shown, e.g. "Total guests" or "Order total".' },
-        column: { type: 'string', description: 'For sum: the table column header whose values add up to the total, e.g. "Party" or "Line total".' },
-        evidence: { type: 'string', description: 'What on the page implies the invariant, e.g. "the list shows each booking\'s party and a Total guests line below it".' },
+        total_label: { type: 'string', description: 'Text right before the total, exactly as shown, e.g. "Total items" or "Order total".' },
+        column: { type: 'string', description: 'For sum: the table column header whose values add up to the total, e.g. "Qty" or "Line total".' },
+        evidence: { type: 'string', description: 'What on the page implies the invariant, e.g. "the cart lists each item\'s quantity and a Total items line below it".' },
         rule_id: { type: 'string' },
       }, ['kind', 'total_label', 'evidence']),
     },
@@ -347,7 +347,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       name: 'check_differential',
       description: 'Compare one page on desktop and on a 390x844 phone for the same account. Oddhound opens it on both, lists the buttons and links in the page\'s main content on each (menus are ignored), and reports any that are usable on desktop but missing or covered on the phone, and errors shown on one only. Optionally name the controls to compare. Give rule_id only when an owner rule says the layouts must match.',
       parameters: s({
-        path: { type: 'string', description: 'A page on the verified site, e.g. "/bookings/3".' },
+        path: { type: 'string', description: 'A page on the verified site, e.g. "/items/3".' },
         controls: { type: 'array', maxItems: 6, items: { type: 'string' }, description: 'Optional: only these visible control labels.' },
         rule_id: { type: 'string' },
       }, ['path']),
@@ -359,9 +359,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       description: 'Interrupt a create form like a real user: fill the form on the current page first (with distinctive text in one field) but do not submit. Oddhound counts that text on list_path, submits the form itself with the interruption (double_submit: two quick presses; offline_submit: offline during the submit, then back online; reload_after_submit: reload while it is saving), retries once normally if nothing was saved, and counts again. More than one new record, or a success message while offline with nothing saved, is a finding.',
       parameters: s({
         kind: { type: 'string', enum: ['double_submit', 'offline_submit', 'reload_after_submit'] },
-        submit: { type: 'string', description: 'The form\'s submit button label, e.g. "Book table".' },
-        field: { type: 'string', description: 'Label of the filled field with distinctive text, e.g. "Guest name".' },
-        list_path: { type: 'string', description: 'Where the created records are listed, e.g. "/bookings".' },
+        submit: { type: 'string', description: 'The form\'s submit button label, e.g. "Save".' },
+        field: { type: 'string', description: 'Label of the filled field with distinctive text, e.g. "Title".' },
+        list_path: { type: 'string', description: 'Where the created records are listed, e.g. "/items".' },
         rule_id: { type: 'string' },
       }, ['kind', 'submit', 'field', 'list_path']),
     },
