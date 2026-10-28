@@ -31,6 +31,7 @@ export function systemPrompt(c: RunContract, mode: AgentMode = 'steps'): string 
     '2. Plan: call plan_tests with 6-14 charters ranked by risk, and keep their statuses current. Typical charters: one account viewing or changing another account\'s records (use actor B), signing out and then opening account pages or pressing Back, data saved correctly and still there after reload, editing or deleting a record then reopening it, double-submitting a form, every form with blank, whitespace-only, very long, unicode, negative or past values, the markup probe in every free-text field followed by a visit to where that text is displayed, every button and control on the key pages (does each one do what its label says, without errors?), and the main pages on a phone.',
     '3. Test each charter: decide what would count as a bug, run the cheapest experiment that shows it, and note the result in the plan.',
     '4. Report what you can show with report_candidate, then continue with the next charter.',
+    '5. The plan is yours and should change as you learn. When you find a page, feature, form or workflow the plan does not cover, add a charter for it with plan_tests (send just the new or changed charters); raise or lower risks as evidence comes in; mark charters blocked with a reason when they cannot be tested. Wander off the plan whenever something looks untested or fragile. Owner focus areas and rules set priorities; only the hard rules below limit where you may go.',
     '',
     'Working efficiently:',
     ...efficiency(mode),

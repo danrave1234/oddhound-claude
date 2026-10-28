@@ -310,7 +310,7 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
       `Findings recorded so far:\n${found.join('\n') || '- none'}`,
       `Coverage: ${cov.exercised} of ${cov.total} controls on ${cov.pages} observed page(s) exercised; ${cov.blocked} blocked by policy.${todo ? ` Not yet exercised (sample): ${todo}.` : ''}`,
       `Current page (element refs are valid for your next call):\n${last}`,
-      'Continue with the next open charter.',
+      'Continue with the next open charter, or add a charter for anything new you found that is worth testing.',
     ].join('\n\n');
   };
   const toolsJson = JSON.stringify(tools);
@@ -357,6 +357,8 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
   // already failed twice is refused before it runs, so the agent changes approach instead of looping.
   const failedSteps = new Map<string, { count: number; seq: number; error: string }>();
   const stepKey = (path: string, tool: string, label: string | undefined) => `${path}|${tool}|${(label ?? '').trim().toLowerCase()}`;
+  // Pages first reached after the latest plan update, shown in the status line so the plan grows with what is found.
+  const pagesSincePlan = new Set<string>();
   let lastCoverage = '';
   // Controls the run may not use count as blocked by policy, not as untested.
   const coverage = new CoverageTracker((el, pageUrl) => {
@@ -464,6 +466,7 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
   const recordState = async (o: Observation, label: string, actionId: string | null): Promise<boolean> => {
     coverage.observe(o);
     const path = new URL(o.url).pathname;
+    if (plan.size && !recorded.controlsByPath.has(path)) pagesSincePlan.add(path);
     const labels = recorded.labelsByPath.get(path) ?? new Set<string>();
     for (const e of o.elements) if ((e.kind === 'input' || e.kind === 'textarea' || e.kind === 'select') && e.label) labels.add(e.label);
     recorded.labelsByPath.set(path, labels);
@@ -534,7 +537,7 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
     const open = [...plan.values()].filter((c) => c.status === 'not_run' || c.status === 'testing');
     const urgent = open.filter((c) => c.risk === 'critical' || c.risk === 'high').length;
     const cov = coverage.summary(0);
-    return `[budget: turn ${turns}/${LIMITS.modelTurnsPerRun}, action ${actions}/${LIMITS.browserActionsPerRun}; plan: ${plan.size ? `${plan.size - open.length}/${plan.size} charters done, ${urgent} critical/high open` : 'none yet - call plan_tests after recon'}; findings so far: ${candidates.length}; controls exercised: ${cov.exercised}/${cov.total}]`;
+    return `[budget: turn ${turns}/${LIMITS.modelTurnsPerRun}, action ${actions}/${LIMITS.browserActionsPerRun}; plan: ${plan.size ? `${plan.size - open.length}/${plan.size} charters done, ${urgent} critical/high open` : 'none yet - call plan_tests after recon'}; findings so far: ${candidates.length}; controls exercised: ${cov.exercised}/${cov.total}${pagesSincePlan.size ? `; new pages since your last plan update: ${[...pagesSincePlan].slice(0, 8).join(', ')} (add charters for any worth testing)` : ''}]`;
   };
 
   const dispatch = async (call: ToolCall): Promise<{ text: string; image?: Buffer }> => {
@@ -582,6 +585,7 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
       }
       case 'plan_tests': {
         for (const c of args.charters as Charter[]) plan.set(c.id, { ...plan.get(c.id), ...c });
+        pagesSincePlan.clear();
         const all = [...plan.values()];
         await ev('plan.updated', {
           charters: all.map((c) => ({ id: c.id, area: c.area, risk: c.risk, technique: c.technique, status: c.status, note: c.note ?? null })),
@@ -995,7 +999,7 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
       if (result.finishReason === 'length') await ev('model.truncated', { turn: turns, usage: result.usage });
       if (!calls.length) {
         if (++nudges > 2) return { stopReason: 'model_stopped_without_tools' };
-        messages.push({ role: 'user', content: 'Continue by calling a tool: work on the next open charter in your test plan, or call finish_run if the plan is done.' });
+        messages.push({ role: 'user', content: 'Continue by calling a tool: work on the next open charter in your test plan, add charters for anything new you found, or call finish_run if nothing worth testing is left.' });
         continue;
       }
       const images: Buffer[] = [];

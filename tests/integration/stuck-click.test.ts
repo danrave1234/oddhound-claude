@@ -58,6 +58,7 @@ class ScriptedPlanner implements ChatProvider {
     const pin = { goal: 'blank note is refused', steps: [{ tool: 'fill', label: 'New note', value: '' }, { tool: 'click', label: 'Pin note' }] };
     const steps: { name: string; args: unknown }[] = [
       call('observe', {}),
+      call('plan_tests', { charters: [{ id: 'C1', area: 'Home page', risk: 'low', technique: 'look around', status: 'testing' }] }),
       call('navigate', { path: '/notes' }),
       call('run_scenario_batch', pin),
       call('run_scenario_batch', pin),
@@ -89,13 +90,15 @@ describe('clicks that cannot happen', () => {
     expect(planner.firstUser).toContain('/contact');
     expect(planner.firstUser).not.toMatch(/elsewhere\.example|brochure\.pdf/);
 
+    // A page reached after the plan was written is pointed out, so the plan can grow.
+    expect(planner.seen[3]).toMatch(/new pages since your last plan update: \/notes/);
     // Disabled: answered at once, with the reason.
-    expect(planner.seen[3]).toMatch(/not clicked: the control is disabled/);
     expect(planner.seen[4]).toMatch(/not clicked: the control is disabled/);
+    expect(planner.seen[5]).toMatch(/not clicked: the control is disabled/);
     // The same failing step a third time is refused, and no browser action is spent on it.
-    expect(planner.seen[5]).toMatch(/Batch not run: step 2 \(click "Pin note"\) already failed 2 times/);
+    expect(planner.seen[6]).toMatch(/Batch not run: step 2 \(click "Pin note"\) already failed 2 times/);
     // Covered by a dialog: named, so the agent knows to close it.
-    expect(planner.seen[6]).toMatch(/another element is on top of it: a dialog "Library"/);
+    expect(planner.seen[7]).toMatch(/another element is on top of it: a dialog "Library"/);
 
     const events = (await db.query<{ type: string; payload: any }>('SELECT type, payload FROM run_events WHERE run_id = $1 ORDER BY seq', [admitted.runId])).rows;
     expect(events.find((e) => e.type === 'site.mapped')?.payload).toMatchObject({ fromSitemap: 2 });
