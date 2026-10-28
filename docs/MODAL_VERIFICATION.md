@@ -12,7 +12,7 @@ Code: `packages/core/browser/modal-runtime.ts` (`BROWSER_RUNTIME=modal`), `tests
 
 | Item | Value |
 |---|---|
-| Browser image | `apps/browser/Dockerfile` unchanged, built on Modal: `im-TDUtu376fE3iO5AHFRyIpO` (Oct 28 evening; IPv4-first proxy dialing with a 10 s connect bound; first image `im-6P2J5P3OXzsS65srOXr4Cs`) (ENTRYPOINT cleared; the worker passes it as the Sandbox command) |
+| Browser image | `apps/browser/Dockerfile` unchanged, built on Modal: `im-NhXfuXcBhv6x85qZ82qx6R` (Oct 29; 1 GiB / 30,000-request traffic cap; canary 31/31 on vm + public allowlist. Earlier: `im-TDUtu376fE3iO5AHFRyIpO` IPv4-first dialing, `im-6P2J5P3OXzsS65srOXr4Cs` first image) (ENTRYPOINT cleared; the worker passes it as the Sandbox command) |
 | Playwright / Chromium | 1.64.1 (same in worker and image) |
 | Node | 26 (image `node:26-bookworm-slim`; local runs with Node 26.12.1) |
 | Modal | Python client 1.6.3 (deploy/build), JS SDK `modal@0.11.1` (worker, web) |
