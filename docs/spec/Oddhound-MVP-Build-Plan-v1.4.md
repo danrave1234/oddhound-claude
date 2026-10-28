@@ -329,6 +329,26 @@ Age 101 is not intrinsically invalid. An input's HTML maximum is evidence of a d
 
 `fast-check` is optional for generating/shrinking supported cases. Shrinking against a stateful application can repeat side effects; only use it with reliable resets and an action budget. [S15]
 
+### Behavioral test families (proposed differentiators)
+
+These families test behavior over time, across actors and against what the application claims, which page-level scanners do not. They are a design, not implemented or measured. Each runs as scout-informed scenario batches (§7) in real-user mode, inside the granted capabilities, fixtures, actor limits and §8 budgets. The model proposes; the runner observes and decides. Rules the model inferred stay hypotheses until an explicit or owner-approved rule supports them.
+
+**1. Claim vs. truth.** After a write whose UI reports success ("Saved", "Order cancelled", a changed badge or count), the runner confirms it independently: reload, revisit the record by its URL, and where a second context is granted, view it from a fresh context of the same actor. A mismatch between the success claim and the persisted state is a candidate; it becomes verified with the before, claim and after evidence plus one safe reproduction. The model extracts what the UI claims as structured tool output. Code compares. A transient delay is retried within a short bounded window before reporting, so eventual consistency is not reported as data loss. Record the window used.
+
+**2. Two actors and concurrency.**
+- *Cross-actor access:* actor A creates synthetic records during the run, and Oddhound saves their URLs/IDs. Actor B, a separate granted account, opens exactly those URLs through ordinary navigation within the verified UI origin and tries the visible actions. Confirm A's ownership and expected visibility first. Never enumerate or guess IDs, and never touch records Oddhound did not create or the owner did not supply. Seeing A's protected synthetic content (not just an HTTP 200) or completing a denied action is the evidence. Direct API attempts belong to the separate authorized request mode below.
+- *Same actor, two tabs:* edit the same record in both and save in either order, cancel in one then edit in the other, submit twice. Check for lost updates, duplicated effects and stale-page writes against the persisted outcome. Only use resettable synthetic fixtures with a known expected result (Timing row above).
+
+**3. Invariant checks.** From the observed page, the model proposes numeric or state invariants as validated tool arguments, each citing its evidence, e.g. "cart total = sum of line totals", "seats left decreases by one per booking", "cancel restores the previous balance". The runner checks them deterministically after relevant steps, with numbers parsed by code, never by the model. An invariant is a hypothesis unless the page states it, simple arithmetic shown on the page requires it, or the owner approves it. A broken hypothesis-only invariant is reported as `needs_review`, not a verified issue. Record currency/rounding assumptions.
+
+**4. Interruption.** Interrupt a workflow in progress with ordinary user events: go offline during a submit (`context.setOffline`) and come back, reload, Back/forward, double activation, let an approved short session expire, or continue the same flow in the mobile profile. Expected outcomes: no duplicated or half-applied effect, clear error or recovery, and no false success claim (combine with family 1). Only on resettable synthetic fixtures. Offline simulation is a client condition, not proof of server behavior under real network failure; reports say so.
+
+**5. Differential comparison.** Run the same scenario in contexts that should agree, and compare the observable outcomes: desktop vs. mobile, actor A vs. actor B where the rules say they are equal, before vs. after the owner's fix. Code computes differences (missing required action, different persisted value, error in one context only). The model only explains differences that survive simple noise filters (timestamps, IDs, ads). A difference becomes a finding only with a rule saying the contexts should match; otherwise it is `needs_review`.
+
+**Reporting.** Each finding keeps the §10 fields, its family, the rule source, the actors and contexts used and the limitations above. These families add to the scenario denominator; they never imply coverage beyond the scenarios run.
+
+**Proof (R4).** On `apps/fixture`, add at least one labelled defect per family (a lying success toast, a cross-actor access gap, a lost update, a broken total, a double-submit under interruption, a mobile-only failure) plus a correct neighbouring control for each. Show the family finds the defect, does not flag the control, and replays the unchanged assertion after the fix. Then exercise at least families 1 and 2 on a real verified site with an active account workflow.
+
 ### Separate authorized request mode
 
 A direct request that bypasses a browser restriction is a different test category. It requires explicit authorization and is labeled as such. Do not mix it into the “a normal user typed this” report.
