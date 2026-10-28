@@ -11,6 +11,7 @@ import type { BrowserContext, Page } from 'playwright';
 import { canonicalJson, sha256 } from '../ledger/runs.ts';
 import { attachSentinels, checkPage, describeSignal, routeOf, type Signal } from '../browser/sentinels.ts';
 import { ExpectSchema, judgeExpectation, pageFacts } from './expect.ts';
+import { claimVisible, judgeCrossActor, judgePersistence, readView, type PageView } from './behavior.ts';
 
 const Template = z.string().max(200);
 const FieldMap = z.record(z.string().min(1).max(80), Template).refine((m) => Object.keys(m).length > 0 && Object.keys(m).length <= 12, 'between 1 and 12 fields');
@@ -89,6 +90,38 @@ export const ScenarioSchema = z.discriminatedUnion('kind', [
     steps: z.array(z.object({ step: z.lazy(() => TraceStepSchema), expect: ExpectSchema.optional() })).min(1).max(15),
     oracleStep: z.number().int().min(1).max(15),
   }),
+  // Family 1, claim vs. truth: the recorded save (ending at its submit), the success message the page
+  // showed, and the saved values that must be visible again after reloading the page the save landed
+  // on and reopening the record. A missing value is only reported after the bounded window.
+  z.object({
+    kind: z.literal('claim_check'),
+    device: z.enum(['desktop', 'mobile']),
+    auth: AuthRecipeSchema.optional(),
+    setup: SetupSchema.optional(),
+    start: z.string().startsWith('/').max(300),
+    steps: z.array(z.lazy(() => TraceStepSchema)).min(1).max(14),
+    /** The success text the page showed after the save (null: it showed none; never verified then). */
+    claim: z.string().min(2).max(120).nullable(),
+    checks: z.array(z.object({ field: z.string().min(1).max(80), value: z.string().min(1).max(500) })).min(1).max(6),
+    /** Pages reopened besides reloading where the save landed. {id}: setup record; {landed_id}: the number in the landed URL. */
+    revisit: z.array(z.string().startsWith('/').max(300)).max(2),
+    windowMs: z.number().int().min(0).max(10_000),
+  }),
+  // Family 2, cross-actor access: actor A creates the record through the recorded form, actor B (a
+  // separate fresh account) opens exactly that record's URL and presses the controls it can see.
+  z.object({
+    kind: z.literal('cross_actor'),
+    device: z.enum(['desktop', 'mobile']),
+    auth: FormAuthRecipeSchema,
+    setup: SetupSchema,
+    path: z.string().startsWith('/').max(300),
+    /** A's list of its own records (where the app shows what belongs to A); B's copy must not list it. */
+    listPath: z.string().startsWith('/').max(300).optional(),
+    /** Setup fields whose values are A's own content. */
+    protect: z.array(z.string().min(1).max(80)).min(1).max(4),
+    controls: z.array(z.object({ target: z.string().min(1).max(120), role: z.enum(['button', 'link']) })).max(2),
+    expectation: z.literal('denied'),
+  }),
 ]);
 export type Scenario = z.infer<typeof ScenarioSchema>;
 
@@ -162,7 +195,7 @@ export function newReplaySessions(): Map<string, StorageState> { return new Map(
 
 class ReplayBlocked extends Error {}
 
-function expand(template: string, vars: Record<string, string>): string {
+export function expand(template: string, vars: Record<string, string>): string {
   return template.replace(/\{(\w+)(?:([+-])(\d+))?\}/g, (whole, name: string, sign?: string, n?: string) => {
     if (name === 'date' || name === 'today') {
       const d = new Date();
@@ -183,7 +216,7 @@ async function fieldLocator(page: Page, key: string) {
   throw new ReplayBlocked(`field not found: ${key}`);
 }
 
-async function fillAndSubmit(page: Page, origin: string, form: { path: string; fields: Record<string, string>; submit: string }, vars: Record<string, string>) {
+export async function fillAndSubmit(page: Page, origin: string, form: { path: string; fields: Record<string, string>; submit: string }, vars: Record<string, string>) {
   await page.goto(new URL(form.path, origin).toString(), { waitUntil: 'domcontentloaded' });
   for (const [key, template] of Object.entries(form.fields)) {
     const loc = await fieldLocator(page, key);
@@ -302,6 +335,8 @@ export async function replayScenario(s: Scenario, env: ReplayEnv): Promise<Repla
 
     if (s.kind === 'trace') return await replayTrace(s, open, env, screenshots);
     if (s.kind === 'batch') return await replayBatch(s, open, env, screenshots);
+    if (s.kind === 'claim_check') return await replayClaim(s, open, env, screenshots);
+    if (s.kind === 'cross_actor') return await replayCrossActor(s, open, env, screenshots);
 
     // mobile_reachability
     const page = await open('mobile', s.auth ? 'A' : undefined, s.auth);
@@ -499,6 +534,111 @@ async function replayBatch(
     }
   }
   return { outcome: 'blocked', observed: `Step ${last} has no expectation to judge.`, details: { checks }, screenshots };
+}
+
+type ClaimScenario = Extract<Scenario, { kind: 'claim_check' }>;
+type Opener = (device: 'desktop' | 'mobile', role?: string, auth?: AuthRecipe) => Promise<Page>;
+const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const pathAndQuery = (url: string) => { const u = new URL(url); return `${u.pathname}${u.search}`; };
+
+/** The pauses of family 1's bounded window: one look now, two more later, summing to the window. */
+export function claimDelays(windowMs: number): number[] {
+  if (windowMs <= 0) return [0];
+  const first = Math.round(windowMs / 3);
+  return [0, first, windowMs - first];
+}
+
+/** Family 1 replay: run the save, confirm the claim appeared, then look for the saved values (bounded window). */
+async function replayClaim(s: ClaimScenario, open: Opener, env: ReplayEnv, screenshots: ReplayResult['screenshots']): Promise<ReplayResult> {
+  const marker = `OH${randomBytes(4).toString('hex').toUpperCase()}`;
+  const page = await open(s.device, s.auth ? 'A' : undefined, s.auth);
+  const vars: Record<string, string> = { ...env.identity(), marker };
+  if (s.setup) vars.id = await runSetup(page, env.origin, s.setup, vars);
+  await page.goto(new URL(expand(s.start, vars), env.origin).toString(), { waitUntil: 'domcontentloaded' });
+  for (const [i, step] of s.steps.entries()) {
+    try { await runStep(page, env.origin, step, vars); }
+    catch (e) {
+      if (e instanceof ReplayBlocked) throw new ReplayBlocked(`step ${i + 1} (${step.op}): ${e.message}`);
+      throw new ReplayBlocked(`step ${i + 1} (${step.op}) failed: ${(e as Error).message.split('\n')[0]!.slice(0, 160)}`);
+    }
+    await page.waitForTimeout(300);
+  }
+  await page.waitForLoadState('networkidle', { timeout: 4_000 }).catch(() => {});
+  const afterSave = await readView(page);
+  screenshots.push(await shot(page, 'after the save'));
+  if (s.claim !== null && !claimVisible(s.claim, afterSave.text)) {
+    return { outcome: 'inconclusive', observed: `The success message "${s.claim}" did not appear after the save in a fresh session, so the claim cannot be compared.`, details: { claim: s.claim }, screenshots };
+  }
+  vars.landed_id = recordIdsInUrl(page.url())[0] ?? '';
+  const paths = [pathAndQuery(page.url()), ...s.revisit.map((p) => expand(p, vars))];
+  const checks = s.checks.map((c) => ({ field: c.field, value: expand(c.value, vars) }));
+  const started = Date.now();
+  let verdict = judgePersistence(checks, []);
+  let looks = 0;
+  for (const delay of claimDelays(s.windowMs)) {
+    await pause(delay);
+    looks++;
+    const views: PageView[] = [];
+    for (const p of paths) {
+      await page.goto(new URL(p, env.origin).toString(), { waitUntil: 'domcontentloaded' });
+      views.push(await readView(page));
+    }
+    verdict = judgePersistence(checks, views);
+    if (!verdict.missing.length) break;
+  }
+  const windowUsedMs = Date.now() - started;
+  screenshots.push(await shot(page, 'record reopened'));
+  const where = paths.join(' and ');
+  return {
+    outcome: verdict.missing.length ? 'failed' : 'passed',
+    observed: verdict.missing.length
+      ? `${s.claim ? `The page said "${s.claim}", but after` : 'After'} reloading and reopening (${where}) over ${(windowUsedMs / 1000).toFixed(1)} s, ${verdict.missing.map((m) => `"${m.field}" = ${JSON.stringify(m.value.slice(0, 60))}`).join(', ')} ${verdict.missing.length === 1 ? 'was' : 'were'} not there.`
+      : `Every saved value was there again after reloading and reopening (${where}).`,
+    details: { claim: s.claim, found: verdict.found, missing: verdict.missing, paths, looks, windowUsedMs, windowMs: s.windowMs },
+    screenshots,
+  };
+}
+
+type CrossScenario = Extract<Scenario, { kind: 'cross_actor' }>;
+
+/** Family 2 replay: A creates the record; B opens exactly its URL and presses the controls it can see. */
+async function replayCrossActor(s: CrossScenario, open: Opener, env: ReplayEnv, screenshots: ReplayResult['screenshots']): Promise<ReplayResult> {
+  const marker = `OH${randomBytes(4).toString('hex').toUpperCase()}`;
+  const pageA = await open(s.device, 'A', s.auth);
+  const vars: Record<string, string> = { ...env.identity(), marker };
+  vars.id = await runSetup(pageA, env.origin, s.setup, vars);
+  const url = new URL(expand(s.path, vars), env.origin);
+  if (url.origin !== new URL(env.origin).origin) throw new ReplayBlocked('record path leaves the verified origin');
+  const protect = s.protect.flatMap((f) => (s.setup.fields[f] !== undefined ? [{ field: f, value: expand(s.setup.fields[f]!, vars) }] : []));
+  await pageA.goto(url.toString(), { waitUntil: 'domcontentloaded' });
+  const ownerView = await readView(pageA);
+  const pageB = await open(s.device, 'B', s.auth);
+  if (pageB.url() === 'about:blank') await pageB.goto(new URL(s.listPath ?? '/', env.origin).toString(), { waitUntil: 'domcontentloaded' });
+  const otherHome = await readView(pageB);
+  let otherList: PageView | undefined;
+  if (s.listPath) { await pageB.goto(new URL(expand(s.listPath, vars), env.origin).toString(), { waitUntil: 'domcontentloaded' }); otherList = await readView(pageB); }
+  const resp = await pageB.goto(url.toString(), { waitUntil: 'domcontentloaded' });
+  const otherView = await readView(pageB);
+  screenshots.push(await shot(pageB, 'second account opens the first account\'s record'));
+  const afterControls: { control: string; clicked: boolean; ownerAfter: PageView }[] = [];
+  for (const c of s.controls) {
+    await pageB.goto(url.toString(), { waitUntil: 'domcontentloaded' });
+    const loc = pageB.getByRole(c.role, { name: c.target, exact: true });
+    let clicked = false;
+    if (await loc.count()) {
+      await loc.first().click({ timeout: 5_000 }).then(() => { clicked = true; }, () => {});
+      await pageB.waitForLoadState('domcontentloaded').catch(() => {});
+    }
+    await pageA.goto(url.toString(), { waitUntil: 'domcontentloaded' });
+    afterControls.push({ control: c.target, clicked, ownerAfter: await readView(pageA) });
+  }
+  const v = judgeCrossActor(protect, { ownerView, otherHome, otherList, otherView, afterControls });
+  return {
+    outcome: v.outcome,
+    observed: v.outcome === 'inconclusive' ? `Cannot judge: ${v.detail}.` : `${v.detail} (HTTP ${resp?.status()}).`,
+    details: { recordPath: url.pathname, status: resp?.status(), privacyEstablished: v.privacyEstablished, leaked: v.leaked, changedBy: v.changedBy, controls: afterControls.map((c) => ({ control: c.control, clicked: c.clicked })) },
+    screenshots,
+  };
 }
 
 /** A valid neighbouring case that must keep working (the control for a form_rule finding). */

@@ -40,6 +40,12 @@ export function systemPrompt(c: RunContract, mode: AgentMode = 'steps'): string 
     `- The markup probe for text fields is ${MARKUP_PROBE}. Type it, save, then open the page that shows the saved text.`,
     '- Each result shows your budget and plan status. Do not finish while critical or high charters are open and budget remains.',
     '',
+    'Behavioral checks (Oddhound acts, looks and decides; you only say what to check):',
+    '- Claim vs. truth: after every save that changes a record or profile, type distinctive values (e.g. "Bio check 7Q2"), submit, then call check_claim with the success message exactly as shown (omit claim if there was none), the labels of the fields you saved, and revisit_path (the record\'s own page or edit form). "SAVE REPORTED" in a result is your cue. Do this for edits as well as creates.',
+    ...(c.capabilities.crossAccountRead && !c.handoff.enabled ? [
+      '- Two actors: after actor A has created a record with distinctive free text, call check_cross_actor with that record\'s page (and its edit page in a second call), and try_controls with the visible actions on it (e.g. "Cancel booking"). Oddhound signs up actor B itself; you do not need use_actor or a second create_identity for this. Never give an id this run did not create.',
+    ] : []),
+    '',
     'Hard rules (enforced by Oddhound outside your control, so do not try to work around them):',
     `- You may only act on ${c.target.origin}. Other sites are off limits.`,
     writes

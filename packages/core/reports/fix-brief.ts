@@ -51,6 +51,20 @@ function reproduction(s: Scenario): string[] {
       const check = x.expect ? ` ${i + 1 === s.oracleStep ? 'Rule check' : 'Precondition'}: ${expectationText(x.expect)}.` : '';
       steps.push(`${traceStepText(x.step)}${check}`);
     });
+  } else if (s.kind === 'claim_check') {
+    if (s.setup) steps.push(setupText(s.setup));
+    steps.push(`Open \`${s.start}\` on a ${s.device === 'mobile' ? '390x844 phone' : 'desktop'} screen.`);
+    for (const st of s.steps) steps.push(traceStepText(st));
+    steps.push(s.claim ? `Check that the page says "${s.claim}".` : 'Note that the page shows no success message.');
+    steps.push(`Reload the page the save landed on${s.revisit.length ? ` and open ${s.revisit.map((p) => `\`${p}\``).join(', ')}` : ''}, waiting up to ${s.windowMs / 1000} s.`);
+    steps.push(`Check: ${s.checks.map((c) => `"${c.field}" shows ${JSON.stringify(c.value)}`).join('; ')}.`);
+  } else if (s.kind === 'cross_actor') {
+    steps.push(setupText(s.setup));
+    steps.push(`Open \`${s.path}\` as that account and confirm it shows ${s.protect.map((f) => `"${f}"`).join(', ')}.`);
+    steps.push('Sign up a second, unrelated account the same way.');
+    if (s.listPath) steps.push(`As the second account, open \`${s.listPath}\`: the first account's record is not listed there.`);
+    steps.push(`As the second account, open exactly \`${s.path}\`.${s.controls.length ? ` Press ${s.controls.map((c) => `"${c.target}"`).join(', ')}, then reopen it as the first account.` : ''}`);
+    steps.push(`Check: the second account does not see the first account's ${s.protect.map((f) => `"${f}"`).join(', ')}${s.controls.length ? ', and the first account\'s record is unchanged' : ''}.`);
   } else {
     if (s.setup) steps.push(setupText(s.setup));
     steps.push(`Open \`${s.start}\` on a ${s.device === 'mobile' ? '390x844 phone' : 'desktop'} screen.`);
@@ -130,7 +144,8 @@ export function fixBriefMarkdown(b: BriefInput): string {
   lines.push('## Implementation guidance (hypotheses, not verified root causes)');
   lines.push('- Oddhound did not read your source code. Locate the handler that processes the request above; the cause has not been confirmed.');
   if (b.scenario?.assertion.kind === 'form_rule') lines.push('- Likely area: server-side validation for this form. Client-side attributes (min/max/required) are not enough on their own.');
-  if (b.scenario?.assertion.kind === 'cross_account_read') lines.push('- Likely area: the record lookup does not check that the record belongs to the signed-in user (object-level authorization).');
+  if (b.scenario?.assertion.kind === 'cross_account_read' || b.scenario?.assertion.kind === 'cross_actor') lines.push('- Likely area: the record lookup (or the action handler) does not check that the record belongs to the signed-in user (object-level authorization).');
+  if (b.scenario?.assertion.kind === 'claim_check') lines.push('- Likely area: the save handler reports success before (or without) persisting every submitted field; check that each field above is written and that the success message is only shown after the write succeeds.');
   if (b.scenario?.assertion.kind === 'mobile_reachability') lines.push('- Likely area: a fixed or overlaying element on narrow screens; reserve space for it or let users dismiss it.');
   if (b.scenario?.assertion.kind === 'trace') lines.push(TRACE_GUIDANCE[b.scenario.assertion.oracle.type] ?? '- Likely area: the handler for the last step above.');
   if (b.scenario?.assertion.kind === 'batch') lines.push('- Likely area: the handler for the step marked "Rule check" above. If the page states a limit for this input, the server must enforce the same limit; client-side attributes alone are not enough.');
@@ -140,7 +155,8 @@ export function fixBriefMarkdown(b: BriefInput): string {
   lines.push('## Acceptance checks');
   lines.push(`- The original scenario must now pass unchanged (assertion hash \`${b.scenario?.assertionHash.slice(0, 12) ?? 'n/a'}\`).`);
   if (b.control?.assertion.kind === 'form_rule') lines.push(`- A valid neighbouring case must still work: ${Object.entries(b.control.assertion.form.fields).map(([k, v]) => `${k} = ${JSON.stringify(v)}`).join('; ')} is accepted.`);
-  if (b.scenario?.assertion.kind === 'cross_account_read') lines.push('- The owner can still open their own record.');
+  if (b.scenario?.assertion.kind === 'cross_account_read' || b.scenario?.assertion.kind === 'cross_actor') lines.push('- The owner can still open their own record.');
+  if (b.scenario?.assertion.kind === 'claim_check') lines.push('- The success message still appears after a save that worked.');
   lines.push('');
   lines.push('## Retest');
   lines.push(`Press "Retest" on this finding in Oddhound after deploying the fix. Retest replays scenario ${b.scenario?.id ?? 'n/a'} with fresh synthetic accounts; no credentials are needed.`);

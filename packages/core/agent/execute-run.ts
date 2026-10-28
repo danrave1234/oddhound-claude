@@ -6,7 +6,7 @@
 
 import type { Db } from '../db/pool.ts';
 import { LIMITS } from '../contracts/limits.ts';
-import { RunContractSchema, pathHasDeniedKeyword, BASELINE_IMPACT, BASELINE_RULES, type RunContract } from '../contracts/contract.ts';
+import { RunContractSchema, pathHasDeniedKeyword, writesPermitted, BASELINE_IMPACT, BASELINE_RULES, type RunContract } from '../contracts/contract.ts';
 import { describeSignal, signalKey, type Signal } from '../browser/sentinels.ts';
 import type { RunStatus } from '../contracts/status.ts';
 import { appendEvent, assertLease, claimRun, FencedError, setRunStatus, refundIfNeverStarted } from '../ledger/runs.ts';
@@ -32,7 +32,8 @@ import { findByLabel, usesRef } from './by-label.ts';
 import { blockedReason, disabledReason } from '../browser/click-check.ts';
 import { readSiteMap } from '../browser/site-map.ts';
 import { runHandoff, HandoffEnded } from './handoff.ts';
-import { CLICK_ROLES, controlFor, newReplaySessions, recordIdsInUrl, replayScenario, scenarioDefect, scenarioHash, type Setup, type AuthRecipe, type Oracle, type ReplayEnv, type Scenario, type TraceStep } from '../verifier/scenario.ts';
+import { CLICK_ROLES, controlFor, fillAndSubmit, newReplaySessions, recordIdsInUrl, replayScenario, scenarioDefect, scenarioHash, type Setup, type AuthRecipe, type Oracle, type ReplayEnv, type Scenario, type TraceStep } from '../verifier/scenario.ts';
+import { CLAIM_RETRY_DELAYS_MS, CLAIM_WINDOW_MS, claimVisible, distinctiveValues, judgeCrossActor, judgePersistence, readView, swapId, type Family, type PageView } from '../verifier/behavior.ts';
 
 export type ExecuteDeps = {
   db: Db;
@@ -56,6 +57,21 @@ type Candidate = {
   source?: 'detector' | 'agent';
   /** Page-stated rules the reproduction's boundary values came from (e.g. 'maxlength=50 on "Notes"'). */
   stated?: string;
+  /** Behavioral family (MVP §9) that produced the candidate. */
+  family?: Family;
+  /** Set when no explicit or owner-approved rule backs the check: the expectation the model inferred.
+   *  The candidate is still replayed, but it can only ever be needs_review, never verified. */
+  hypothesis?: string;
+  /** Contexts used, as reported (e.g. "actor A and actor B, desktop"). */
+  contexts?: string;
+  /** Family-specific limits of what the check shows. */
+  limitations?: string;
+};
+
+/** The last form submit of the run, as Oddhound observed it (family 1 reads it). */
+type LastWrite = {
+  submitSeq: number; path: string; submit: string; values: Map<string, string>; landedUrl: string; bodyText: string;
+  actor: string; device: 'desktop' | 'mobile'; checked: boolean;
 };
 
 /** One ledgered browser action converted to a replayable step (recorded by Oddhound, not the model). */
@@ -190,7 +206,7 @@ export async function executeRun(deps: ExecuteDeps, runId: string): Promise<RunS
 
     // 4. Exploration with the Meta model.
     const candidates: Candidate[] = [];
-    const recorded: Recorded = { auth: handoffState ? { kind: 'handoff' } : null, labelsByPath: new Map(), controlsByPath: new Map(), submitByPath: new Map(), acceptedByPath: new Map(), createdBy: new Map() };
+    const recorded: Recorded = { auth: handoffState ? { kind: 'handoff' } : null, labelsByPath: new Map(), controlsByPath: new Map(), submitByPath: new Map(), acceptedByPath: new Map(), createdBy: new Map(), creators: new Map() };
     const loop = await agentLoop({ deps, runId, generation, contract, run, provider, price, session, ev, abort, candidates, recorded });
     if (loop.stopReason) stopReason = loop.stopReason;
 
@@ -265,6 +281,8 @@ export type Recorded = {
   acceptedByPath?: Map<string, Map<string, Set<string>>>;
   /** Record number -> the form submit that created it (the number was in the URL the form landed on). */
   createdBy?: Map<string, Setup>;
+  /** Record number -> which actor created it and the page the create landed on (its list, if any). */
+  creators?: Map<string, { actor: string; landed: string }>;
 };
 
 async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: string }> {
@@ -335,11 +353,16 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
     const path = new URL((await session.page()).url()).pathname;
     const m = typed.get(path) ?? new Map<string, string>(); m.set(label, value); typed.set(path, m);
   };
-  const noteSubmit = (path: string, label: string | null) => {
+  let lastWrite: LastWrite | null = null;
+  const noteSubmit = async (path: string, label: string | null, submitSeq: number | undefined) => {
     const values = typed.get(path);
     if (!label || !values?.size) return;
     recorded.submitByPath?.set(path, label);
     const o = session.lastObservation;
+    if (o && submitSeq !== undefined) {
+      const bodyText = await (await session.page()).locator('body').innerText({ timeout: 5_000 }).catch(() => o.text);
+      lastWrite = { submitSeq, path, submit: label, values: new Map(values), landedUrl: o.url, bodyText, actor: session.actor, device: session.device, checked: false };
+    }
     const landed = o ? new URL(o.url).pathname : path;
     if (o && landed !== path && !o.alerts.some((a) => /error|invalid|required|must|cannot|already/i.test(a))) {
       const acc = recorded.acceptedByPath?.get(path) ?? new Map<string, Set<string>>();
@@ -349,10 +372,21 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
       // and neither does a sign-up or sign-in form (its landing page may carry a flag such as ?welcome=1).
       const authForm = pendingAuth?.path === path || (recorded.auth && 'path' in recorded.auth && recorded.auth.path === path);
       if (!authForm && !/\/\d{1,12}(\/|$)/.test(path)) {
-        for (const id of recordIdsInUrl(o.url)) if (!recorded.createdBy?.has(id)) recorded.createdBy?.set(id, { path, fields: Object.fromEntries(values), submit: label });
+        for (const id of recordIdsInUrl(o.url)) {
+          if (recorded.createdBy?.has(id)) continue;
+          recorded.createdBy?.set(id, { path, fields: Object.fromEntries(values), submit: label });
+          recorded.creators?.set(id, { actor: session.actor, landed });
+        }
       }
       typed.delete(path);
     }
+  };
+  /** One line after a save that reported success, so the model can check the claim (family 1). */
+  const claimHint = (): string => {
+    const w = lastWrite as LastWrite | null;
+    const o = session.lastObservation;
+    if (!w || w.checked || !o || !o.notices.length) return '';
+    return `\nSAVE REPORTED: the page says ${JSON.stringify(o.notices[0]!.slice(0, 80))} after submitting ${[...w.values.keys()].slice(0, 6).map((k) => JSON.stringify(k)).join(', ')}. To confirm it is true, call check_claim.`;
   };
   let lastStep: StepInfo | null = null;
   const batches = new Map<number, BatchRecord>();
@@ -388,7 +422,7 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
   const verificationReserveMs = () => Math.min(6 * 60_000, 90_000 + candidates.length * 35_000);
 
   /** Translate the action just executed into a replayable step, using what the model saw (labels, kinds). */
-  const toStep = (tool: ToolName, args: Record<string, any>): TraceStep | null => {
+  const toStep = (tool: ToolName | InternalTool, args: Record<string, any>): TraceStep | null => {
     const asTemplate = (v: string) => {
       const ident = identities.find((i) => i.name === v || i.email === v);
       return ident ? (ident.name === v ? '{name}' : '{email}') : v;
@@ -436,7 +470,7 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
   };
 
   /** Turn new sentinel signals from the last action into verified-on-replay candidates. */
-  const handleSignals = async (tool: ToolName, actionSeq: number, drained: { signals: Signal[]; scopeBlocked: boolean }): Promise<string[]> => {
+  const handleSignals = async (tool: ToolName | InternalTool, actionSeq: number, drained: { signals: Signal[]; scopeBlocked: boolean }): Promise<string[]> => {
     const notes: string[] = [];
     for (const sig of drained.signals) {
       // A 404 after the model typed a URL itself is not a broken link on the site.
@@ -496,7 +530,7 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
     return ins.rows[0]!.inserted;
   };
 
-  const runBrowserAction = async (tool: ToolName, args: Record<string, any>, describe: string, fn: () => Promise<void>, opts: { quiet?: boolean; stated?: string } = {}): Promise<string> => {
+  const runBrowserAction = async (tool: ToolName | InternalTool, args: Record<string, any>, describe: string, fn: () => Promise<void>, opts: { quiet?: boolean; stated?: string } = {}): Promise<string> => {
     if (actions >= LIMITS.browserActionsPerRun) throw new LimitReached('limit_actions');
     const wait = LIMITS.minActionIntervalMs - (Date.now() - lastActionAt);
     if (wait > 0) await sleep(wait);
@@ -545,6 +579,198 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
     const urgent = open.filter((c) => c.risk === 'critical' || c.risk === 'high').length;
     const cov = coverage.summary(0);
     return `[budget: turn ${turns}/${LIMITS.modelTurnsPerRun}, action ${actions}/${LIMITS.browserActionsPerRun}; plan: ${plan.size ? `${plan.size - open.length}/${plan.size} charters done, ${urgent} critical/high open` : 'none yet - call plan_tests after recon'}; findings so far: ${candidates.length}; controls exercised: ${cov.exercised}/${cov.total}${pagesSincePlan.size ? `; new pages since your last plan update: ${[...pagesSincePlan].slice(0, 8).join(', ')} (add charters for any worth testing)` : ''}]`;
+  };
+
+  // ---- Behavioral families (MVP §9). The model names what to check; Oddhound acts, looks and decides.
+
+  /** Why the run may not open a path on the verified site, or null when it may. */
+  const pathRefusal = (p: string): string | null => {
+    let u: URL;
+    try { u = new URL(p, session.origin); } catch { return 'not a valid path'; }
+    if (u.origin !== session.origin) return 'outside the verified site';
+    if (contract.deniedPathPrefixes.some((x) => u.pathname.startsWith(x))) return 'denied by the run contract';
+    const w = pathHasDeniedKeyword(u.pathname, contract.deniedPathKeywords);
+    return w ? `denied by the run contract (blocked word "${w}")` : null;
+  };
+  /** Ledgered navigation taken by Oddhound for a check (same limits, fences and evidence as the model's). */
+  const openPath = (p: string, why: string) => runBrowserAction('navigate', { path: p }, `${why}: opened ${p.split('?')[0]}`,
+    async () => { await (await session.page()).goto(new URL(p, session.origin).toString(), { waitUntil: 'domcontentloaded' }); }, { quiet: true });
+  const switchActor = async (actor: 'A' | 'B') => {
+    if (session.actor !== actor) await runBrowserAction('use_actor', { actor }, `Switched to actor ${actor}`, async () => { await session.useActor(actor); }, { quiet: true });
+  };
+  const view = async (): Promise<PageView> => readView(await session.page());
+  const asTemplateValue = (v: string) => { const i = identities.find((x) => x.name === v || x.email === v); return i ? (i.name === v ? '{name}' : '{email}') : v; };
+  const afterCheck = () => `${session.lastObservation ? `\n${formatObservation(session.lastObservation)}` : ''}\n${statusLine()}`;
+
+  /** Family 1: compare what the page claimed after the last save with what reloading and reopening show. */
+  const checkClaim = async (args: { claim?: string; fields: string[]; revisit_path?: string }): Promise<string> => {
+    const w = lastWrite as LastWrite | null;
+    if (!w) return 'No save recorded yet in this run: fill a form, submit it, then call check_claim.';
+    if (w.actor !== session.actor || w.device !== session.device) return `The last save was made as actor ${w.actor} on ${w.device}; switch back to it first.`;
+    const filled = new Set(w.values.keys());
+    const checks: { field: string; value: string }[] = [];
+    for (const f of args.fields) {
+      const label = closestLabel(f, filled);
+      const value = w.values.get(label);
+      if (value === undefined) return `"${f}" was not filled in the last submitted form (${w.path}). Fields filled there: ${[...filled].map((x) => JSON.stringify(x)).join(', ')}.`;
+      if (value.trim()) checks.push({ field: label, value });
+    }
+    if (!checks.length) return 'Those fields were left blank, so there is nothing to look for.';
+    if (args.claim !== undefined && !claimVisible(args.claim, w.bodyText)) return `The page did not show ${JSON.stringify(args.claim)} after the save. Give the success message exactly as shown, or omit claim if there was none.`;
+    if (args.revisit_path) { const r = pathRefusal(args.revisit_path); if (r) return `revisit_path ${args.revisit_path} is ${r}.`; }
+    w.checked = true;
+    const landedUrl = new URL(w.landedUrl);
+    const paths = [...new Set([`${landedUrl.pathname}${landedUrl.search}`, ...(args.revisit_path ? [args.revisit_path] : [])])];
+    await ev('scenario.started', { family: 'claim_vs_truth', claim: args.claim ?? null, fields: checks.map((c) => c.field), paths });
+    const started = Date.now();
+    let verdict = judgePersistence(checks, []);
+    let looks = 0;
+    for (const delay of CLAIM_RETRY_DELAYS_MS) {
+      if (delay) await sleep(delay);
+      looks++;
+      const views: PageView[] = [];
+      for (const p of paths) { await openPath(p, 'Checking the save'); views.push(await view()); }
+      verdict = judgePersistence(checks, views);
+      if (!verdict.missing.length) break;
+    }
+    const windowUsedMs = Date.now() - started;
+    await ev('scenario.finished', { family: 'claim_vs_truth', outcome: verdict.missing.length ? 'failed' : 'passed', claim: args.claim ?? null, missing: verdict.missing.map((m) => m.field), found: verdict.found, looks, windowUsedMs, windowMs: CLAIM_WINDOW_MS });
+    if (!verdict.missing.length) return `Claim held: ${verdict.found.map((f) => `"${f.field}" is on ${f.path}`).join('; ')} (looked ${looks} time(s)). No finding.${afterCheck()}`;
+
+    const missingText = verdict.missing.map((m) => `"${m.field}" = ${JSON.stringify(m.value.slice(0, 60))}`).join(', ');
+    const observedText = `${args.claim ? `After the save the page said "${args.claim}", but` : 'The page showed no success message, and'} after reloading and reopening (${paths.join(', ')}) over ${(windowUsedMs / 1000).toFixed(1)} s, ${missingText} ${verdict.missing.length === 1 ? 'was' : 'were'} not there.`;
+    // The replay is built from Oddhound's own record of the save, never from the model's description.
+    const t = traceFor(w.submitSeq);
+    if (typeof t === 'string') {
+      await ev('signal.not_replayable', { family: 'claim_vs_truth', reason: t });
+      return `Mismatch seen, but it cannot be replayed (${t}): ${observedText}${afterCheck()}`;
+    }
+    const auth = recorded.auth && !t.usesPassword ? recorded.auth : undefined;
+    const rp = withRecordSetup(t.start, t.steps.map((step) => ({ step })), recorded);
+    const landedIds = recordIdsInUrl(w.landedUrl);
+    const revisit = (args.revisit_path ? [args.revisit_path] : []).map((p) => {
+      let out = rp.id ? swapId(p, rp.id, '{id}') : p;
+      for (const id of landedIds) if (id !== rp.id) out = swapId(out, id, '{landed_id}');
+      return out;
+    });
+    const scenario: Scenario = {
+      kind: 'claim_check', device: t.device, ...(auth ? { auth } : {}), ...(rp.setup ? { setup: rp.setup } : {}), start: rp.start, steps: rp.steps.map((x) => x.step),
+      claim: args.claim ?? null, checks: verdict.missing.map((m) => ({ field: m.field, value: asTemplateValue(m.value) })), revisit, windowMs: CLAIM_WINDOW_MS,
+    };
+    const names = verdict.missing.map((m) => `"${m.field}"`).join(', ');
+    const title = args.claim ? `The page says "${args.claim.slice(0, 40)}", but ${names} ${verdict.missing.length === 1 ? 'is' : 'are'} not saved` : `${names} not saved after submitting ${w.path}`;
+    candidates.push({
+      title: title.slice(0, 140), ruleId: args.claim ? 'B11' : 'claim_unstated', impact: 'high', observed: observedText.slice(0, 500), scenario, actor: t.actor, device: t.device, source: 'agent', family: 'claim_vs_truth',
+      ...(args.claim ? {} : { hypothesis: 'The form was accepted without an error, so its values were expected to be saved. The page showed no success message, so no explicit rule says this save should have kept them.' }),
+      contexts: `actor ${t.actor}, ${t.device}; exploration reloaded and reopened in the same session, replays use fresh sessions`,
+      limitations: `Saved values were looked for on the page the save landed on${revisit.length ? ' and on the reopened record' : ''} within a ${CLAIM_WINDOW_MS / 1000} s window (exploration used ${(windowUsedMs / 1000).toFixed(1)} s over ${looks} looks). A value the site shows in another format (e.g. a reformatted date) would also look missing.`,
+    });
+    await ev('finding.candidate', { title, ruleId: args.claim ? 'B11' : null, kind: 'claim_check', source: 'agent', family: 'claim_vs_truth' });
+    return `Claim did NOT hold: ${observedText} Recorded as a candidate${args.claim ? '' : ' for review only (no success message, so no rule to verify against)'}; Oddhound will replay it in fresh sessions.${afterCheck()}`;
+  };
+
+  let actorB: { ref: string } | null = null;
+  /** Actor B is a separate fresh account, signed up by Oddhound with the sign-up actor A used. */
+  const ensureActorB = async (): Promise<string | null> => {
+    if (actorB) return null;
+    const auth = recorded.auth;
+    if (!contract.capabilities.crossAccountRead) return 'a second actor is not permitted by this run contract';
+    if (!auth || auth.kind !== 'register') return auth?.kind === 'handoff' ? 'this run uses the owner\'s own sign-in, so no second account exists' : 'no sign-up has been recorded yet (sign up as actor A first, so Oddhound can repeat it for actor B)';
+    if (!contract.registration.allowed || !contract.capabilities.register) return 'registration is not permitted by this run contract';
+    if (identities.length >= contract.registration.maxIdentities) return `the identity limit (${contract.registration.maxIdentities} per run) is used up`;
+    const ident = syntheticIdentity(runId, identities.length + 1, contract.registration.emailDomain);
+    const ref = await storeCredential(db, { runId, label: `generated identity ${identities.length + 1} (actor B)`, username: ident.email, secret: ident.password, generated: true });
+    secrets.add(ident.password);
+    identities.push({ ref, name: ident.name, email: ident.email });
+    await ev('identity.created', { credentialRef: ref, email: ident.email, actor: 'B' });
+    await switchActor('B');
+    let reached = false;
+    await runBrowserAction('sign_up_actor', { actor: 'B', path: auth.path, credential_ref: ref }, `Signed up actor B at ${auth.path} with the recorded sign-up`, async () => {
+      const page = await session.page();
+      await fillAndSubmit(page, session.origin, auth, ident);
+      reached = (await page.locator('body').innerText().catch(() => '')).includes(auth.successText);
+    }, { quiet: true });
+    const step = lastStep as StepInfo | null;
+    if (step?.error) return `signing up actor B failed: ${step.error}`;
+    if (!reached) return `the recorded sign-up did not reach "${auth.successText}" for actor B`;
+    actorB = { ref };
+    return null;
+  };
+
+  /** Family 2 (cross-actor): actor B opens exactly a record actor A created in this run. */
+  const checkCrossActor = async (args: { path: string; try_controls?: string[] }): Promise<string> => {
+    const refusal = pathRefusal(args.path);
+    if (refusal) return `${args.path} is ${refusal}.`;
+    const ownIds = [...(recorded.creators?.entries() ?? [])].filter(([, c]) => c.actor === 'A').map(([id]) => id);
+    const ownList = ownIds.slice(0, 8).join(', ') || 'none yet';
+    const ids = recordIdsInUrl(new URL(args.path, session.origin).toString());
+    if (!ids.length) return `${args.path} names no record. Give the page of a record actor A created in this run (records: ${ownList}).`;
+    const foreign = ids.filter((id) => recorded.creators?.get(id)?.actor !== 'A');
+    if (foreign.length) return `Only records Oddhound saw actor A create in this run can be used; ids are never guessed. Not created by actor A here: ${foreign.join(', ')} (records actor A created: ${ownList}).`;
+    const id = ids[0]!;
+    const setup = recorded.createdBy!.get(id)!;
+    const protect = distinctiveValues(setup.fields);
+    if (!protect.length) return `The form that created record ${id} held no distinctive text (only short values, numbers, dates or emails), so a leak could not be told apart from chance. Create a record with a distinctive free-text value first.`;
+    const blocked = await ensureActorB();
+    if (blocked) {
+      await ev('scenario.blocked', { family: 'two_actors', check: 'cross_actor', reason: blocked });
+      return `Cannot run the cross-actor check: ${blocked}. Scenario outcome: blocked.${afterCheck()}`;
+    }
+    // The page the create landed on lists actor A's records when it names no record itself.
+    const landed = recorded.creators!.get(id)!.landed;
+    const listPath = recordIdsInUrl(new URL(landed, session.origin).toString()).length ? undefined : landed;
+    await ev('scenario.started', { family: 'two_actors', check: 'cross_actor', path: args.path, protect: protect.map((p) => p.field) });
+    await switchActor('A');
+    await openPath(args.path, 'Cross-actor check, actor A (owner)');
+    const ownerView = await view();
+    await switchActor('B');
+    await openPath('/', 'Cross-actor check, actor B on its own home page');
+    const otherHome = await view();
+    let otherList: PageView | undefined;
+    if (listPath) { await openPath(listPath, 'Cross-actor check, actor B on its own list'); otherList = await view(); }
+    await openPath(args.path, 'Cross-actor check, actor B opens actor A\'s record');
+    const otherView = await view();
+    const afterControls: { control: string; clicked: boolean; ownerAfter: PageView }[] = [];
+    const tried: { target: string; role: 'button' | 'link' }[] = [];
+    const notOffered: string[] = [];
+    for (const label of (writesPermitted(contract) ? args.try_controls ?? [] : [])) {
+      if (afterControls.length) { await switchActor('B'); await openPath(args.path, 'Cross-actor check, actor B reopens the record'); }
+      const obs = session.lastObservation!;
+      const hit = findByLabel(obs.elements, 'click', label);
+      const el = 'ref' in hit ? obs.elements.find((e) => e.ref === hit.ref) : undefined;
+      if (!el || (el.kind !== 'button' && el.kind !== 'link')) { notOffered.push(label); continue; }
+      session.beginTurn();
+      const loc = await session.locate(el.ref).catch((e: Error) => e);
+      if (loc instanceof Error) { notOffered.push(label); continue; }
+      await runBrowserAction('click', { ref: el.ref }, `Actor B pressed ${el.kind} "${el.label}" on actor A's record`, async () => {
+        await loc.click({ timeout: 5_000 }); await (await session.page()).waitForLoadState('domcontentloaded');
+      }, { quiet: true });
+      const clicked = !(lastStep as StepInfo | null)?.error;
+      tried.push({ target: el.label, role: el.kind });
+      await switchActor('A');
+      await openPath(args.path, 'Cross-actor check, actor A reopens its record');
+      afterControls.push({ control: el.label, clicked, ownerAfter: await view() });
+    }
+    await switchActor('A');
+    const v = judgeCrossActor(protect, { ownerView, otherHome, otherList, otherView, afterControls });
+    await ev('scenario.finished', { family: 'two_actors', check: 'cross_actor', outcome: v.outcome, path: args.path, privacyEstablished: v.privacyEstablished, leaked: v.leaked, changedBy: v.changedBy, notOffered });
+    const offered = notOffered.length ? ` Not offered to actor B: ${notOffered.map((c) => JSON.stringify(c)).join(', ')}.` : '';
+    if (v.outcome !== 'failed') return `Cross-actor check ${v.outcome}: ${v.detail}.${offered}${v.outcome === 'passed' ? ' No finding.' : ''} You are actor A again.${afterCheck()}`;
+    const auth = recorded.auth as Extract<AuthRecipe, { kind: 'register' }>;
+    const scenario: Scenario = {
+      kind: 'cross_actor', device: session.device, auth, setup, path: swapId(args.path, id, '{id}'), ...(listPath ? { listPath } : {}),
+      protect: protect.map((p) => p.field), controls: tried.filter((c) => v.changedBy.includes(c.target)), expectation: 'denied',
+    };
+    const route = args.path.split('?')[0]!.replace(/\/\d+(?=\/|$)/g, '/:id');
+    const title = `Another account can ${[v.leaked.length ? 'see' : '', v.changedBy.length ? 'change' : ''].filter(Boolean).join(' and ')} a user's record at ${route}`;
+    candidates.push({
+      title, ruleId: 'B7', impact: 'high', observed: `${v.detail}.`.slice(0, 500), scenario, actor: 'A+B', device: session.device, source: 'agent', family: 'two_actors',
+      ...(v.privacyEstablished ? {} : { hypothesis: listPath ? `Actor B's own ${listPath} also showed this record, so the site may show it to everyone on purpose.` : 'The create did not land on a list of actor A\'s records, so Oddhound could not show that the site treats this record as private.' }),
+      contexts: `actor A (creator) and actor B (a separate fresh account), ${session.device}`,
+      limitations: 'Only a record created in this run was opened, by its exact URL through the UI as a normal user; no ids were guessed and no direct API request was made (that is the separate authorized request mode).',
+    });
+    await ev('finding.candidate', { title, ruleId: 'B7', kind: 'cross_actor', source: 'agent', family: 'two_actors' });
+    return `Cross-actor check FAILED: ${v.detail}.${offered} Recorded as a candidate${v.privacyEstablished ? '' : ' for review (privacy not established)'}; Oddhound will replay it with two fresh accounts. You are actor A again.${afterCheck()}`;
   };
 
   const dispatch = async (call: ToolCall): Promise<{ text: string; image?: Buffer }> => {
@@ -692,6 +918,8 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
             }
             if (info.notes.length) { line += ` | ${info.notes.join(' | ')}`; surprise ??= 'Oddhound detected a problem'; }
             if (info.dialogs.length) { line += ` | dialog dismissed: ${info.dialogs.join(' | ')}`; surprise ??= 'a dialog opened'; }
+            const saved = /SAVE REPORTED: .*/.exec(out.text)?.[0];
+            if (saved) line += ` | ${saved}`;
             // A blocked request to the verified site, or a blocked navigation, changes what the step did. Blocked
             // third-party writes (analytics beacons, injected scripts) are enforced and logged but routine.
             if (info.ownScopeBlocked) { line += ' | a request to the site was blocked by the scope policy'; surprise ??= 'policy block'; }
@@ -723,7 +951,14 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
           ? `\nIf a failed expectation breaks an owner or baseline rule, report it: report_candidate with scenario {"kind":"batch","batch":${no},"step":<step number>}.` : '';
         return { text: `${head}\n${lines.join('\n')}${hint}\n${formatObservation(o)}\n${statusLine()}` };
       }
+      case 'check_claim':
+        return { text: await checkClaim(args as { claim?: string; fields: string[]; revisit_path?: string }) };
+      case 'check_cross_actor':
+        return { text: await checkCrossActor(args as { path: string; try_controls?: string[] }) };
       case 'report_candidate': {
+        if (args.scenario.kind === 'claim_check' || args.scenario.kind === 'cross_actor') {
+          return { text: `Do not write ${args.scenario.kind} scenarios yourself: call ${args.scenario.kind === 'claim_check' ? 'check_claim' : 'check_cross_actor'}; Oddhound records the candidate from what it observes.` };
+        }
         if (args.scenario.kind === 'batch' && 'steps' in args.scenario) {
           return { text: 'Do not write batch steps yourself. Give {"kind":"batch","batch":N,"step":K}; Oddhound builds the steps from its own record.' };
         }
@@ -811,13 +1046,14 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
         if (loc instanceof Error) return { text: loc.message };
         const clickedLabel = session.labelOf(args.ref);
         const clickPath = new URL((await session.page()).url()).pathname;
-        const text = await runBrowserAction(name, args, `Clicked ${session.describe(args.ref)}`, async () => {
+        let text = await runBrowserAction(name, args, `Clicked ${session.describe(args.ref)}`, async () => {
           const off = await disabledReason(loc);
           if (off) throw new Error(off);
           try { await loc.click({ timeout: 5_000 }); } catch (e) { throw new Error((await blockedReason(loc)) ?? (e as Error).message); }
           await (await session.page()).waitForLoadState('domcontentloaded');
         });
-        noteSubmit(clickPath, clickedLabel);
+        await noteSubmit(clickPath, clickedLabel, (lastStep as StepInfo | null)?.seq);
+        text += claimHint();
         if (pendingAuth && clickedLabel && Object.values(pendingAuth.fields).includes('{password}') && !recorded.auth) {
           const o = session.lastObservation;
           const landed = o ? new URL(o.url).pathname : pendingAuth.path;
@@ -1047,6 +1283,9 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
   }
 }
 
+/** Browser actions Oddhound takes itself for a behavioral check (ledgered like the model's own). */
+type InternalTool = 'sign_up_actor';
+
 class LimitReached extends Error { readonly reason: string; constructor(reason: string) { super(reason); this.reason = reason; } }
 
 /** Above this many input tokens the conversation is replaced by Oddhound's notebook. */
@@ -1084,14 +1323,14 @@ function groundFields(fields: Record<string, string>, observed: Set<string> | un
 
 /** A scenario that starts on (or opens) a record this run created gets a setup that creates its own record,
  *  and the record number in its paths becomes {id}; a fresh replay account cannot open the original. */
-export function withRecordSetup<T extends { step: TraceStep; expect?: { path?: string } }>(start: string, steps: T[], recorded: Recorded): { start: string; steps: T[]; setup?: Setup } {
+export function withRecordSetup<T extends { step: TraceStep; expect?: { path?: string } }>(start: string, steps: T[], recorded: Recorded): { start: string; steps: T[]; setup?: Setup; id?: string } {
   const pathIds = (p: string) => p.split('?')[0]!.split('/').filter((x) => /^\d{1,12}$/.test(x));
   const paths = [start, ...steps.flatMap((x) => (x.step.op === 'goto' ? [x.step.path] : []))];
   const id = paths.flatMap(pathIds).find((x) => recorded.createdBy?.has(x));
   if (!id) return { start, steps };
   const swap = (p: string, to: string) => p.replace(new RegExp(`/${id}(?=/|\\?|$)`, 'g'), `/${to}`);
   return {
-    setup: recorded.createdBy!.get(id)!,
+    setup: recorded.createdBy!.get(id)!, id,
     start: swap(start, '{id}'),
     steps: steps.map((x) => ({
       ...x,
@@ -1208,8 +1447,10 @@ async function verifyCandidates(v: { db: Db; runId: string; generation: number; 
     if (seen.has(hash)) continue;
     seen.add(hash);
     await assertLease(db, runId, v.generation);
-    const rule = contract.rules.find((r) => r.id === c.ruleId) ?? BASELINE_RULES.find((r) => r.id === c.ruleId);
+    const known = contract.rules.find((r) => r.id === c.ruleId) ?? BASELINE_RULES.find((r) => r.id === c.ruleId);
     const fingerprint = `${c.ruleId}|${c.scenario.kind}|${hash.slice(0, 16)}`;
+    // A family check without an explicit rule is still replayed for evidence, against its stated hypothesis.
+    const rule = known ?? (c.hypothesis ? { id: c.ruleId, text: c.hypothesis, source: 'hypothesis' as const } : undefined);
     if (!rule) {
       await db.query(`INSERT INTO findings (project_id, run_id, title, category, verification, impact, confidence, rule_id, rule_source, expected, observed, device, actor, limitations, fingerprint)
         VALUES ($1,$2,$3,'needs_review','candidate',$4,'low',$5,'agent hypothesis','No owner rule covers this behaviour.',$6,$7,$8,'Not verified: no owner rule to judge against.',$9)`,
@@ -1232,7 +1473,14 @@ async function verifyCandidates(v: { db: Db; runId: string; generation: number; 
     let limitations = '';
     let controlScenarioId: string | null = null;
     const outcomes = attempts.map((a) => a.outcome);
-    if (outcomes.every((o) => o === 'failed')) {
+    // A cross-actor replay only shows a leak of private data when the site itself keeps the record off
+    // the other account's list; otherwise the record may be public by design.
+    const privacyUnproven = c.scenario.kind === 'cross_actor' && attempts.some((a) => a.outcome === 'failed' && a.details.privacyEstablished === false);
+    const hypothesisOnly = Boolean(c.hypothesis) || privacyUnproven;
+    if (hypothesisOnly && outcomes.every((o) => o === 'failed')) {
+      verification = 'inconclusive'; category = 'needs_review';
+      limitations = `Reproduced 2/2, but no explicit or owner-approved rule covers it, so it is for review, not a verified issue: ${c.hypothesis ?? 'actor B\'s own list also showed the record, so it may be public by design.'}`;
+    } else if (outcomes.every((o) => o === 'failed')) {
       verification = 'verified'; category = 'verified_issue';
       const control = c.controlValues ? controlFor(c.scenario, c.controlValues) : null;
       if (control) {
@@ -1249,11 +1497,15 @@ async function verifyCandidates(v: { db: Db; runId: string; generation: number; 
       verification = 'inconclusive'; limitations = `Replays disagreed or could not run: ${attempts.map((a) => `${a.outcome} (${a.observed})`).join('; ')}`.slice(0, 600);
     }
     const observed = attempts.find((a) => a.outcome === 'failed')?.observed ?? attempts[0]!.observed;
-    const f = await db.query<{ id: string }>(`INSERT INTO findings (project_id, run_id, scenario_id, control_scenario_id, title, category, verification, lifecycle, impact, confidence, rule_id, rule_source, expected, observed, device, actor, limitations, fingerprint, evidence_ids)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id`,
+    const ruleSource = rule.source === 'hypothesis' ? 'Agent hypothesis (no explicit or owner-approved rule)'
+      : `${rule.source === 'owner' ? 'Owner rule' : rule.source === 'baseline' ? 'Oddhound baseline rule' : 'Demo target rule'} ${rule.id}${c.stated ? ` (page-stated: ${c.stated})` : ''}`;
+    // Family findings say which contexts were used and what the check cannot show.
+    const fullLimitations = [limitations, c.contexts ? `Contexts: ${c.contexts}.` : '', c.limitations ?? ''].filter(Boolean).join(' ').slice(0, 1500);
+    const f = await db.query<{ id: string }>(`INSERT INTO findings (project_id, run_id, scenario_id, control_scenario_id, title, category, verification, lifecycle, impact, confidence, rule_id, rule_source, expected, observed, device, actor, limitations, fingerprint, evidence_ids, family)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id`,
       [run.project_id, runId, scenarioId, controlScenarioId, c.title, category, verification, verification === 'verified' ? 'open' : null, c.impact,
-        verification === 'verified' ? 'reproduced 2/2' : 'low', c.ruleId, `${rule.source === 'owner' ? 'Owner rule' : rule.source === 'baseline' ? 'Oddhound baseline rule' : 'Demo target rule'} ${rule.id}${c.stated ? ` (page-stated: ${c.stated})` : ''}`.slice(0, 300),
-        rule.text, observed, c.scenario.device, c.actor, limitations, fingerprint, evidence]);
+        verification === 'verified' ? 'reproduced 2/2' : 'low', known ? c.ruleId : null, ruleSource.slice(0, 300),
+        rule.text, observed, c.scenario.device, c.actor, fullLimitations, fingerprint, evidence, c.family ?? null]);
     await ev(verification === 'verified' ? 'finding.verified' : verification === 'dismissed' ? 'finding.dismissed' : 'finding.inconclusive',
       { findingId: f.rows[0]!.id, title: c.title, ruleId: c.ruleId, outcomes });
   }

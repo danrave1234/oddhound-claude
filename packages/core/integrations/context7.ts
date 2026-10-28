@@ -48,6 +48,7 @@ export async function fetchDocs(library: string, topic: string, opts: { apiKey?:
 /** A generic documentation topic for a scenario kind (no site content). */
 export function topicFor(kind: string): string {
   if (kind === 'form_rule') return 'server-side validation of form input in request handlers';
-  if (kind === 'cross_account_read') return 'authorization: restrict records to their owner in data access';
+  if (kind === 'cross_account_read' || kind === 'cross_actor') return 'authorization: restrict records to their owner in data access';
+  if (kind === 'claim_check') return 'persisting form updates: save every submitted field before reporting success';
   return 'responsive layout: fixed elements covering content on small screens';
 }

@@ -9,6 +9,10 @@
 //   D3 any signed-in user can open another user's booking (object authorization)
 //   D4 on narrow screens a promo banner permanently covers the Book button
 //   D5 the party-size field has no programmatic label (accessibility)
+//   D6 family 1 (claim vs. truth): editing a booking says "Changes saved." but drops the edited notes
+//      (control: notes typed when creating a booking are saved; other edited fields are saved)
+//   D3 is also family 2 (two actors): another account can open the booking page by its URL
+//      (control: the edit page and the cancel action refuse another account in both builds)
 // Controls that work in both builds: past dates are rejected, party size above 8 is rejected,
 // registration validates email/password, and users can only cancel their own bookings.
 //
@@ -237,6 +241,7 @@ ${mine.length ? `<table><thead><tr><th>Booking</th><th>Guest</th><th>Party</th><
       if (!booking || (!owns && (fixed || match[2]))) return send(res, 404, page('Not found', '<h1>Booking not found</h1>', user));
       if (!match[2] && req.method === 'GET') {
         return send(res, 200, page(`Booking #${booking.id}`, `<h1>Booking #${booking.id}</h1>
+${url.searchParams.get('saved') ? '<p class="notice" role="status">Changes saved.</p>' : ''}
 <dl><dt>Guest</dt><dd data-field="guest_name">${esc(booking.guestName)}</dd><dt>Party size</dt><dd data-field="party_size">${booking.partySize}</dd>
 <dt>Date</dt><dd data-field="date">${esc(booking.date)}</dd><dt>Notes</dt><dd data-field="notes">${esc(booking.notes)}</dd><dt>Status</dt><dd data-field="status">${booking.status}</dd></dl>
 ${owns && booking.status === 'confirmed' ? `<p><a href="/bookings/${booking.id}/edit">Edit booking</a></p><form method="post" action="/bookings/${booking.id}/cancel"><button type="submit">Cancel booking</button></form>` : ''}`, user));
@@ -247,8 +252,9 @@ ${owns && booking.status === 'confirmed' ? `<p><a href="/bookings/${booking.id}/
           const form = await readForm(req);
           const result = validateBooking(form);
           if (result.error) return send(res, 422, page('Edit booking', `<h1>Edit booking #${booking.id}</h1>${bookingForm(`/bookings/${booking.id}/edit`, Object.fromEntries(form), result.error, 'Save changes')}`, user));
-          Object.assign(booking, result.value);
-          return redirect(res, `/bookings/${booking.id}`);
+          // D6: the vulnerable build keeps the old notes but still reports the save as done.
+          Object.assign(booking, fixed ? result.value : { ...result.value, notes: booking.notes });
+          return redirect(res, `/bookings/${booking.id}?saved=1`);
         }
       }
       if (match[2] === '/cancel' && req.method === 'POST') {

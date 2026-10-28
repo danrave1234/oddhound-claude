@@ -101,6 +101,17 @@ export const ToolArgs = {
   do_steps: z.object({ steps: z.array(StepSchema).min(1).max(8) }),
   run_scenario_batch: z.object({ goal: z.string().min(3).max(200), steps: z.array(BatchStepSchema).min(1).max(15) }),
   plan_tests: z.object({ charters: z.array(CharterSchema).min(1).max(20) }),
+  // Family 1: the model names the success claim and the saved fields; Oddhound reloads, reopens and compares.
+  check_claim: z.object({
+    claim: z.string().min(2).max(120).optional(),
+    fields: z.array(z.string().min(1).max(80)).min(1).max(6),
+    revisit_path: z.string().startsWith('/').max(300).optional(),
+  }),
+  // Family 2: a page of a record actor A created in this run; Oddhound opens it as a separate actor B.
+  check_cross_actor: z.object({
+    path: z.string().startsWith('/').max(300),
+    try_controls: z.array(z.string().min(1).max(80)).max(2).optional(),
+  }),
   finish_run: z.object({ summary: z.string().min(5).max(800) }),
 } as const;
 export type ToolName = keyof typeof ToolArgs;
@@ -254,6 +265,27 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         technique: { type: 'string', description: 'What you will try and what would count as a bug' },
         status: { type: 'string', enum: ['not_run', 'testing', 'completed', 'blocked'] }, note: { type: 'string' },
       }, ['id', 'area', 'risk', 'technique', 'status']) } }, ['charters']),
+    },
+  },
+  {
+    type: 'function', function: {
+      name: 'check_claim',
+      description: 'Right after a save whose page reports success (e.g. "Saved", "Booking updated"), check that it is true. Give the success message exactly as shown (omit claim if the page showed none) and the labels of the fields you saved. Oddhound reloads the page the save landed on, reopens revisit_path (the record\'s own page, if it has one), and compares the saved values itself, waiting a few seconds before calling anything missing.',
+      parameters: s({
+        claim: { type: 'string', description: 'The success message exactly as the page shows it. Omit when the page showed none.' },
+        fields: { type: 'array', maxItems: 6, items: { type: 'string' }, description: 'Labels of the fields filled in the last submitted form whose values should now be saved, e.g. ["Bio", "Display name"].' },
+        revisit_path: { type: 'string', description: 'Optional: the record\'s own page or edit form, e.g. "/bookings/12" or "/profile".' },
+      }, ['fields']),
+    },
+  },
+  {
+    type: 'function', function: {
+      name: 'check_cross_actor',
+      description: 'Check that another account cannot see or change a record actor A created in this run. Give the record\'s page (its URL path from this run, e.g. "/bookings/3" or "/bookings/3/edit"). Oddhound signs up actor B itself, confirms A can see the record, opens exactly that URL as B, presses up to two controls B can see (try_controls, e.g. ["Cancel booking"]), and judges the result. Only records Oddhound saw actor A create can be used; never guess ids.',
+      parameters: s({
+        path: { type: 'string' },
+        try_controls: { type: 'array', maxItems: 2, items: { type: 'string' }, description: 'Visible button or link labels on that page to press as actor B (they change only this run\'s own test record).' },
+      }, ['path']),
     },
   },
   { type: 'function', function: { name: 'finish_run', description: 'End the exploration with a short factual summary. Refused while high-risk charters are untested and budget remains.', parameters: s({ summary: { type: 'string' } }, ['summary']) } },

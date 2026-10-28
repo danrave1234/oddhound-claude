@@ -28,10 +28,11 @@ export const BASELINE_RULES: Rule[] = [
   { id: 'B8', text: 'Required fields reject blank or whitespace-only input.', source: 'baseline' },
   { id: 'B9', text: 'After signing out, account-only pages and data are not shown without signing in again.', source: 'baseline' },
   { id: 'B10', text: 'Rules a page states about its own inputs (length, range, step, format, or a limit stated in its text) hold when a user submits the form.', source: 'baseline' },
+  { id: 'B11', text: 'When the site says a change was saved (for example "Saved" or "Booking updated"), the saved values are there when the page is reloaded or the record is reopened.', source: 'baseline' },
 ];
 /** How serious a confirmed baseline violation is, for ordering and display. */
 export const BASELINE_IMPACT: Record<string, 'high' | 'medium' | 'low'> = {
-  B1: 'high', B2: 'medium', B3: 'high', B4: 'medium', B5: 'low', B6: 'low', B7: 'high', B8: 'medium', B9: 'high', B10: 'medium',
+  B1: 'high', B2: 'medium', B3: 'high', B4: 'medium', B5: 'low', B6: 'low', B7: 'high', B8: 'medium', B9: 'high', B10: 'medium', B11: 'high',
 };
 
 /** Owner (or demo) rules plus the baseline rules, without duplicate IDs. */
