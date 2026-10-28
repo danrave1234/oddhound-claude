@@ -103,17 +103,17 @@ def web():
     node(["scripts/next-with-env.mjs", "start", "--port", "8080", "--hostname", "0.0.0.0"], cwd="/app/apps/web")
 
 
-@app.function(image=web_image, secrets=[web_secret], env=COMMON_ENV, cpu=1.0, memory=1024, max_containers=1, timeout=2 * 3600)
-def worker():
-    """Drains the Postgres run queue, runs the reapers, and exits after 90 s with no active run."""
-    node(["/app/apps/worker/main.ts"], cwd="/app", extra_env={"ODDHOUND_WORKER_IDLE_EXIT_MS": "90000"}, wait=True)
+@app.function(image=web_image, secrets=[web_secret], env=COMMON_ENV, cpu=0.5, memory=1024, max_containers=1, timeout=2 * 3600)
+def worker(idle_exit_ms: int = 90_000):
+    """Drains the Postgres run queue, runs the reapers, and exits after idle_exit_ms with no active run."""
+    node(["/app/apps/worker/main.ts"], cwd="/app", extra_env={"ODDHOUND_WORKER_IDLE_EXIT_MS": str(int(idle_exit_ms))}, wait=True)
 
 
-@app.function(image=web_image, schedule=modal.Period(minutes=10), timeout=60)
+@app.function(image=web_image, schedule=modal.Period(minutes=15), timeout=60)
 def tick():
     """Safety net: starts the worker so stranded queue entries and orphaned Sandboxes are handled even
     if a wake-up from the web app was lost. Sandboxes also carry a hard Modal timeout of their own."""
-    worker.spawn()
+    worker.spawn(idle_exit_ms=15_000)
 
 
 def fixture(mode: str):
