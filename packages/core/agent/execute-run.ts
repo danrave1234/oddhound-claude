@@ -304,7 +304,7 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
     const unvisited = knownPaths.filter((p) => !recorded.controlsByPath.has(new URL(p, contract.target.origin).pathname));
     return [
       'NOTEBOOK (kept by Oddhound; the earlier conversation was compacted to save cost)',
-      `Budget: turn ${turns}/${LIMITS.modelTurnsPerRun}, action ${actions}/${LIMITS.browserActionsPerRun}. Last action #${seq}. You are actor ${session.actor} on ${session.device}.`,
+      `Budget: ${budgetText()}. Turn ${turns}, last action #${seq}. You are actor ${session.actor} on ${session.device}.`,
       recorded.auth ? `Sign-up recipe that worked: ${recorded.auth.kind === 'handoff' ? 'owner handoff session' : `${recorded.auth.path} -> "${recorded.auth.successText}"`}` : 'No sign-up recorded yet.',
       `Synthetic identities:\n${ids.join('\n') || '- none'}`,
       `Pages seen:\n${pages.join('\n') || '- none'}`,
@@ -384,6 +384,8 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
     await ev('coverage.updated', cov);
   };
   // Leave time at the end for independent verification (replays) before the run's hard expiry.
+  let spentMicros = 0;
+  let wrapUpSent = false;
   const expiresAt = (await db.query<{ expires_at: Date | null }>('SELECT expires_at FROM runs WHERE id = $1', [runId])).rows[0]?.expires_at?.getTime() ?? Date.now() + LIMITS.runWallClockMs;
   const verificationReserveMs = () => Math.min(6 * 60_000, 90_000 + candidates.length * 35_000);
 
@@ -539,12 +541,14 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
     return `${head}\n${formatObservation(o)}\n${statusLine()}`;
   };
 
+  /** Money and time left: the only budgets (turns and actions are not capped). */
+  const budgetText = () => `$${(spentMicros / 1e6).toFixed(3)} of $${(LIMITS.modelSpendPerRunMicros / 1e6).toFixed(2)} spent, ${Math.max(0, Math.round((expiresAt - Date.now()) / 60_000))} min left`;
   /** One line of budget and plan state, appended to each observation so the model can pace itself. */
   const statusLine = () => {
     const open = [...plan.values()].filter((c) => c.status === 'not_run' || c.status === 'testing');
     const urgent = open.filter((c) => c.risk === 'critical' || c.risk === 'high').length;
     const cov = coverage.summary(0);
-    return `[budget: turn ${turns}/${LIMITS.modelTurnsPerRun}, action ${actions}/${LIMITS.browserActionsPerRun}; plan: ${plan.size ? `${plan.size - open.length}/${plan.size} charters done, ${urgent} critical/high open` : 'none yet - call plan_tests after recon'}; findings so far: ${candidates.length}; controls exercised: ${cov.exercised}/${cov.total}${pagesSincePlan.size ? `; new pages since your last plan update: ${[...pagesSincePlan].slice(0, 8).join(', ')} (add charters for any worth testing)` : ''}]`;
+    return `[budget: ${budgetText()}; plan: ${plan.size ? `${plan.size - open.length}/${plan.size} charters done, ${urgent} critical/high open` : 'none yet - call plan_tests after recon'}; findings so far: ${candidates.length}; controls exercised: ${cov.exercised}/${cov.total}${pagesSincePlan.size ? `; new pages since your last plan update: ${[...pagesSincePlan].slice(0, 8).join(', ')} (add charters for any worth testing)` : ''}]`;
   };
 
   const dispatch = async (call: ToolCall): Promise<{ text: string; image?: Buffer }> => {
@@ -784,7 +788,7 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
       case 'finish_run': {
         // A tester does not stop while high-risk charters are untested and budget remains.
         const open = [...plan.values()].filter((c) => (c.status === 'not_run' || c.status === 'testing') && (c.risk === 'critical' || c.risk === 'high'));
-        const budgetLeft = turns < LIMITS.modelTurnsPerRun - 8 && actions < LIMITS.browserActionsPerRun - 30 && Date.now() < expiresAt - verificationReserveMs() - 60_000;
+        const budgetLeft = spentMicros < LIMITS.modelSpendPerRunMicros * 0.85 && Date.now() < expiresAt - verificationReserveMs() - 60_000;
         if (open.length && budgetLeft && finishRefusals < 2) {
           finishRefusals++;
           await ev('finish.refused', { open: open.map((c) => c.id) });
@@ -1026,10 +1030,12 @@ async function agentLoop(a: LoopArgs): Promise<{ stopReason?: string; summary?: 
         await ev('budget.denied', { reason: 'exploration_spend_cap', capMicros: a.deps.explorationSpendCapMicros });
         return { stopReason: 'budget_exploration_cap' };
       }
-      const left = LIMITS.modelTurnsPerRun - turns;
-      if (left <= 5 && !finished) {
+      spentMicros = (await runSpend(db, runId)).settled;
+      const nearEnd = spentMicros >= LIMITS.modelSpendPerRunMicros * 0.9 || Date.now() > expiresAt - verificationReserveMs() - 90_000;
+      if (nearEnd && !wrapUpSent && !finished) {
         // Budget awareness: tell the model to report what it found and wrap up before the hard limit.
-        messages.push({ role: 'user', content: `Only ${left} model turn(s) left. Report any rule violations now with report_candidate, then call finish_run with a factual summary of what you covered.` });
+        wrapUpSent = true;
+        messages.push({ role: 'user', content: `The run is close to its money or time limit (${budgetText()}). Report any rule violations now with report_candidate, then call finish_run with a factual summary of what you covered.` });
       }
       if (images.length) {
         messages.push({ role: 'user', content: [

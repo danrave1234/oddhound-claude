@@ -199,7 +199,7 @@ export function LiveDeck({ snap, active, replay, onOpenBrowser, onOpenFindings }
 
           {/* Gauges with real denominators */}
           <div className="gauges">
-            <Ring label={`of ${LIMITS.browserActionsPerRun} actions`} value={model.actionsUsed} max={LIMITS.browserActionsPerRun} display={<CountUp value={model.actionsUsed} />} spoken={String(model.actionsUsed)} />
+            <Ring label="actions (no limit)" value={model.actionsUsed} max={Math.max(50, model.actionsUsed * 1.25)} display={<CountUp value={model.actionsUsed} />} spoken={String(model.actionsUsed)} />
             <Ring label={`of ${fmtClock(LIMITS.runWallClockMs)} time`} value={elapsedMs} max={LIMITS.runWallClockMs} display={fmtClock(elapsedMs)} spoken={fmtClock(elapsedMs)} tone="info" />
             <Ring label={model.charters.length ? `of ${model.charters.length} plan items` : 'no plan yet'} value={planDone} max={Math.max(1, model.charters.length)} display={<CountUp value={planDone} />} spoken={String(planDone)} tone="ok" />
             <Ring label={`of $${(LIMITS.modelSpendPerRunMicros / 1e6).toFixed(2)} model spend`} value={replay && !atEnd ? 0 : spendMicros} max={LIMITS.modelSpendPerRunMicros}
