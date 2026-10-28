@@ -412,7 +412,11 @@ export async function replayScenario(s: Scenario, env: ReplayEnv): Promise<Repla
       };
     }
     if (s.kind === 'invariant') {
-      const page = await open(s.device, s.auth ? 'A' : undefined, s.auth);
+      // A total over the account's records needs an account holding only this scenario's records: the
+      // shared replay account also holds other scenarios' records (a party of 0 hid a skipped row once).
+      // A handoff session cannot be replaced, so it keeps the owner's account.
+      const role = s.auth && s.auth.kind !== 'handoff' ? `invariant-${randomBytes(4).toString('hex')}` : 'A';
+      const page = await open(s.device, s.auth ? role : undefined, s.auth);
       const vars: Record<string, string> = { ...env.identity(), marker: `OH${randomBytes(4).toString('hex').toUpperCase()}` };
       for (const st of s.setups) await runSetup(page, env.origin, st, vars);
       await page.goto(new URL(expand(s.path, vars), env.origin).toString(), { waitUntil: 'domcontentloaded' });
